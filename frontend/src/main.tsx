@@ -717,6 +717,22 @@ function App({ isClient = false }: { isClient?: boolean }) {
   const [searchSummary, setSearchSummary] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchSeconds, setSearchSeconds] = useState(0);
+  const [searchProjectId, setSearchProjectId] = useState("");
+  const [suggestedQueries, setSuggestedQueries] = useState<string[]>([]);
+  const [suggestionError, setSuggestionError] = useState("");
+  useEffect(() => {
+    setQuery("");
+    setSuggestedQueries([]);
+    setSuggestionError("");
+  }, [pid]);
+  useEffect(() => {
+    if (!pid || page !== 2) return;
+    let active = true;
+    api<{ queries: string[] }>(`/projects/${pid}/retrieval-suggestions`)
+      .then((data) => { if (active) { setSuggestedQueries(data.queries); setSuggestionError(""); } })
+      .catch((e) => { if (active) setSuggestionError(`建議詞暫時無法讀取：${e.message}`); });
+    return () => { active = false; };
+  }, [pid, page, project?.description, project?.sources?.length]);
   useEffect(() => {
     if (!searching) return;
     const timer = window.setInterval(() => setSearchSeconds((seconds) => seconds + 1), 1000);
@@ -994,6 +1010,28 @@ function App({ isClient = false }: { isClient?: boolean }) {
     setDetailView(true);
     setPage(step);
   }
+  function showSearchResult(response: any, projectId: string) {
+    setSearchProjectId(projectId);
+    setResults(response.results || []);
+    setSearchWarnings(response.warnings || []);
+    const count = response.results?.length || 0;
+    setSearchSummary(`檢索完成：本機 ${response.local_count || 0} 筆、共用知識伺服器 ${response.remote_count || 0} 筆。${count ? "請檢查相關性，再加入專案依據。" : "沒有符合的來源，可調整檢索詞或確認知識庫範圍。"}${response.queries?.length ? ` 本次檢索詞：${response.queries.join("、")}` : ""}`);
+  }
+  async function searchKnowledge(automatic = false, term = query) {
+    const projectId = pid;
+    setSearching(true);
+    setSearchSeconds(0);
+    setSearchProjectId(projectId);
+    setResults([]);
+    setSearchWarnings([]);
+    setSearchSummary("");
+    try {
+      const response = await queueAndWait("RAG", { query: term, project_id: projectId, automatic });
+      if (selectedProject.current === projectId) showSearchResult(response, projectId);
+    } finally {
+      setSearching(false);
+    }
+  }
   const nextStep = (() => {
     if (!project) return null;
     const report = project.state.change_analysis;
@@ -1265,6 +1303,18 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </details>
           <p>搜尋結果只是參考，加入專案後才會參與需求分析。</p>
           <div className="card">
+            <h3>依需求自動尋找知識</h3>
+            <p>彤靈會從專案目標與已保存的需求整理檢索詞，搜尋目前允許的本機與共用知識來源，合併重複結果。</p>
+            <div className="actions">
+              <button className="primary" disabled={busy || searching} onClick={() => act(() => searchKnowledge(true))}>
+                {searching ? "檢索中…" : "依需求自動檢索"}
+              </button>
+            </div>
+            {suggestedQueries.length > 0 && <div className="retrieval-suggestions">
+              <p className="muted">建議檢索詞 · 點選可單獨搜尋，也可在下方自行調整</p>
+              <div className="actions">{suggestedQueries.map((term) => <button key={term} disabled={busy || searching} onClick={() => { setQuery(term); void act(() => searchKnowledge(false, term)); }}>{term}</button>)}</div>
+            </div>}
+            {suggestionError && <p role="status" className="feedback warning">{suggestionError}</p>}
             <div className="row">
               <input
                 aria-label="搜尋知識"
@@ -1275,23 +1325,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <button
                 className="primary"
                 disabled={busy || !query.trim()}
-                onClick={() =>
-                  act(async () => {
-                    setSearching(true);
-                    setSearchSeconds(0);
-                    setResults([]);
-                    setSearchWarnings([]);
-                    setSearchSummary("");
-                    try {
-                      const response = await queueAndWait("RAG", { query, project_id: pid });
-                      setResults(response.results);
-                      setSearchWarnings(response.warnings || []);
-                      setSearchSummary(`檢索完成：本機 ${response.local_count} 份、伺服器 ${response.remote_count} 份。${response.results.length === 0 ? "沒有符合的來源。" : "請檢查相關性與證據角色。"}`);
-                    } finally {
-                      setSearching(false);
-                    }
-                  })
-                }
+                onClick={() => act(() => searchKnowledge())}
               >
                 搜尋
               </button>
@@ -1319,12 +1353,12 @@ function App({ isClient = false }: { isClient?: boolean }) {
               />
             </label>}
             <small>
-              預設為離線字詞特徵向量；可在設定指定本機語意嵌入模型。
+              自動檢索不會自動核准來源；Agent 模式會在分析前挑選相關依據。
             </small>
           </div>
-          {searchWarnings.map((warning, i) => <p key={i} role="status" className="feedback warning">{warning}</p>)}
-          {searchSummary && <p role="status" className="feedback success">{searchSummary}</p>}
-          {results.map((r: any) => (
+          {searchProjectId === pid && searchWarnings.map((warning, i) => <p key={i} role="status" className="feedback warning">{warning}</p>)}
+          {searchProjectId === pid && searchSummary && <p role="status" className={`feedback ${results.length ? "success" : "warning"}`}>{searchSummary}</p>}
+          {searchProjectId === pid && results.map((r: any) => (
             <article className="card" key={r.chunk_logical_id || r.chunk_id}>
               <span className="badge">
                 {r.evidence_role} · 相關度{" "}
@@ -1380,7 +1414,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       act(async () => {
                         const result = r.source_location === "REMOTE"
                           ? await api("/projects/" + pid + "/knowledge/attach-remote", "POST", {
-                            provider_id: r.provider_id, remote_evidence_id: r.remote_evidence_id, query,
+                            provider_id: r.provider_id, remote_evidence_id: r.remote_evidence_id, query: r.matched_query || query,
                           })
                           : await api("/projects/" + pid + "/knowledge/attach", "POST", { source_id: r.source_id });
                         setNotice(`${result.message}。重新分析後會納入需求比對。`);
@@ -2429,14 +2463,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
           {job.status === "RUNNING" && <p>{job.cancel_requested ? "正在取消，已完成的步驟可能需要收尾。" : `主機正在處理${job.progress ? ` · ${job.progress}%` : ""}，離開頁面不會停止。`}</p>}
           {job.status === "FAILED" && <p role="alert" className="execution-warning">{job.error || "工作失敗，可重新提交。"}</p>}
           <div className="actions">
-            {["QUEUED", "RUNNING"].includes(job.status) && <button disabled={busy || !!job.cancel_requested} onClick={() => act(async () => { updateJob(await api<Job>(`/jobs/${job.job_id}/cancel`, "POST")); })}>取消工作</button>}
+            {["QUEUED", "RUNNING"].includes(job.status) && <button disabled={!!job.cancel_requested} onClick={() => { void api<Job>(`/jobs/${job.job_id}/cancel`, "POST").then(updateJob).catch((e) => setError(e.message)); }}>取消工作</button>}
             {["FAILED", "CANCELLED"].includes(job.status) && <button disabled={busy} onClick={() => act(async () => { updateJob(await api<Job>(`/jobs/${job.job_id}/resume`, "POST")); })}>重新提交</button>}
             {job.status === "COMPLETED" && <button onClick={() => act(async () => {
               const detail = await api<Job>(`/jobs/${job.job_id}`);
               void dismissJob(job.job_id);
               if (job.project_id) { setPid(job.project_id); setHomeOpen(false); }
               if (job.kind === "GUIDANCE") { setGuidance(detail.result); setCreateOpen(true); }
-              if (job.kind === "RAG") { setResults(detail.result?.results || []); setSearchWarnings(detail.result?.warnings || []); setPage(2); }
+              if (job.kind === "RAG" && job.project_id) { showSearchResult(detail.result, job.project_id); setPage(2); setDetailView(true); }
               if (job.kind === "PRD") setPage(8);
               if (job.project_id) await refresh(job.project_id);
             })}>查看結果</button>}

@@ -1261,3 +1261,7 @@ summary {
 .next-step-bar button { margin-left: auto; }
 .task-chips .task-chip { font: inherit; cursor: pointer; }
 .subtle-mode { opacity: 0.8; }
+
+.retrieval-suggestions .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 12px; }
+.retrieval-suggestions button { min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+@media (max-width: 480px) { .retrieval-suggestions .actions { grid-template-columns: 1fr; } }

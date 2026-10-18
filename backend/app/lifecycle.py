@@ -310,9 +310,14 @@ def create_draft(db, project):
                                                              if r.get("source_id")]})
         content["change_scope"] = [{"requirement_id": p["requirement_id"], "action": p["status"],
                                     "before": p["current_state"], "after": p["target_state"]} for p in delta]
+        # A PM-modified requirement carries criteria written for its new wording.
+        decided = {r.id: r.decision for r in accepted}
         content["acceptance_criteria"] = [{"requirement_id": p["requirement_id"], "description": criterion,
                                            "status": "TO_CONFIRM"}
-                                          for p in delta for criterion in p["proposed_requirement"]["acceptance_criteria"]]
+                                          for p in delta
+                                          for criterion in ((decided[p["requirement_id"]].get("action") == "MODIFY"
+                                                             and decided[p["requirement_id"]].get("acceptance_criteria"))
+                                                            or p["proposed_requirement"]["acceptance_criteria"])]
         content["open_issues"] += [{"statement": issue}
                                    for issue in dict.fromkeys(i for p in delta for i in p["evidence_uncertainty"]["open_questions"])]
     if not parent:

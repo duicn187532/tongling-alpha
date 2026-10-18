@@ -215,6 +215,7 @@ PUBLIC_ROUTES = [
     ("GET", r"/api/projects/[^/]+/peer-research"),
     ("GET", r"/api/knowledge/graph/status"),
     ("POST", r"/api/retrieval/search"),
+    ("GET", r"/api/projects/[^/]+/retrieval-suggestions"),
     ("GET", r"/api/projects/[^/]+/events"),
     ("GET", r"/api/jobs/[^/]+"),
     ("GET", r"/api/jobs"),
