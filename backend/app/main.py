@@ -1162,7 +1162,63 @@ def attach(pid: str, body: AttachInput, db=Depends(get_db)):
     if not db.get(Link, (pid, s.id)):
         db.add(Link(project_id=pid, source_id=s.id))
         mark_stale(db, p, s.id, f"採用知識來源：{s.title}")
-    return {"ok": True}
+        return {"ok": True, "source_id": s.id, "added": True, "message": f"已加入專案依據：{s.title}"}
+    return {"ok": True, "source_id": s.id, "added": False, "message": f"已是專案依據：{s.title}"}
+
+
+class RemoteAttachInput(BaseModel):
+    provider_id: str = Field(min_length=1, max_length=64)
+    remote_evidence_id: str = Field(min_length=1, max_length=300)
+    query: str = Field(default="", max_length=200)
+
+
+@app.post("/api/projects/{pid}/knowledge/attach-remote")
+def attach_remote(pid: str, body: RemoteAttachInput, db=Depends(get_db)):
+    """A company-server hit becomes a project source only through the host,
+    which fetches it itself; the browser never supplies evidence text."""
+    from .knowledge_federation import import_remote_evidence
+    p = get(db, Project, pid)
+    if p.runtime == "RUNNING":
+        raise HTTPException(409, "Agent 正在執行，請等本輪完成再加入依據")
+    source, created = import_remote_evidence(db, p, body.provider_id, body.remote_evidence_id,
+                                             settings(db), body.query)
+    if created:
+        mark_stale(db, p, source.id, f"採用公司檔案服務器來源：{source.title}")
+    return {"ok": True, "source_id": source.id, "added": created,
+            "message": f"已加入專案依據：{source.title}" if created else f"已是專案依據：{source.title}"}
+
+
+@app.delete("/api/projects/{pid}/sources/{sid}")
+def remove_project_source(pid: str, sid: str, db=Depends(get_db)):
+    """Unlink a source from this project; the library copy stays for audit."""
+    from .intelligence import apply_analysis
+    db.execute(text("BEGIN IMMEDIATE"))
+    p = get(db, Project, pid)
+    if p.runtime == "RUNNING":
+        raise HTTPException(409, "Agent 正在執行，請先暫停再移除依據")
+    link = db.get(Link, (pid, sid))
+    if not link:
+        raise HTTPException(404, "此來源不是本案依據")
+    source = db.get(Source, sid)
+    db.delete(link)
+    db.flush()
+    activity.cancel_project(db, pid)
+    state = dict(p.state)
+    pending = [x for x in state.get("dirty_sources", []) if x != sid]
+    state["dirty_sources"] = pending
+    state["draft_id"] = None
+    title = source.title if source else sid
+    if state.get("analysis_stale") and pending:
+        # Other evidence still waits for analysis; retire this one in that run.
+        state["removed_sources"] = sorted(set(state.get("removed_sources", [])) | {sid})
+        p.state = state
+    else:
+        p.state = state
+        apply_analysis(db, p, {sid: []})
+    p.epoch += 1
+    p.runtime = "READY"
+    log(db, pid, "SOURCE_REMOVED", f"移除專案依據：{title}", {"source_id": sid})
+    return {"ok": True, "message": f"已移除依據：{title}。由它產生的需求已重新整理。"}
 
 
 @app.post("/api/connectors")

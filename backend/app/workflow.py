@@ -2,9 +2,21 @@ import re
 from sqlalchemy import select, text
 from .db import Session, Project, Link, Run, Change, Requirement, Source, log, now
 from .intelligence import settings, extract_sources, apply_analysis
-from .retrieval import retrieve
+from .retrieval import retrieve, _retrieve_local
+from .knowledge_federation import agent_search, import_remote_evidence
 from .lifecycle import create_draft, interruption, resolve_interruptions
 from . import activity
+
+def requirement_text(db, project):
+    """What the user asked for: the brief plus requirement texts added later."""
+    parts = [project.description or ""]
+    for source in db.scalars(select(Source).join(Link, Link.source_id == Source.id).where(
+            Link.project_id == project.id,
+            Source.kind.in_(["REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT"]))):
+        if source.content and source.content.strip() not in parts[0]:
+            parts.append(source.content.strip())
+    return "\n".join(p for p in parts if p)[:2000] or project.name
+
 
 def auto_decide_safe(db, project):
     """Delegation accepts only clear, sourced candidates; never baselines a PRD."""
@@ -176,26 +188,34 @@ def _execute(project_id, run_id, epoch):
             config = db.get(Run, run_id).checkpoint.get("model_config") or settings(db)
             config = {**config, "_project_id": project_id}
             activity.stage("檢查來源與執行計畫", "正在整理本次需要分析的證據")
-            if (
-                not project.current_revision_id
-                and not project.state.get("retrieval_done")
-                and project.mode == "AGENT"
-            ):
-                # Retrieval precedes intelligence and attaches actual library evidence, never sample facts.
-                activity.stage("檢索共用知識庫")
-                hits = retrieve(
-                    db, project.description or project.name, project.id,
-                    {**config, "_skip_graph_reasoning": True},
+            if not project.state.get("retrieval_done") and project.mode == "AGENT":
+                # The Agent searches the shared library itself before analysis:
+                # local shared documents and any enabled company file server.
+                activity.stage("檢索共用知識庫", "以需求主題搜尋內建知識庫與公司檔案服務器")
+                hits, queries = agent_search(
+                    db, project, requirement_text(db, project),
+                    {**config, "_skip_graph_reasoning": True}, _retrieve_local,
                 )
-                added = []
-                remote_references = []
+                added, imported, references, failures = [], [], [], []
                 for hit in hits:
                     if hit["evidence_role"] not in {"KEY", "SUPPORTING"}:
                         continue
                     if hit.get("source_location") == "REMOTE":
-                        remote_references.append({k: hit.get(k) for k in (
-                            "title", "provider_id", "remote_evidence_id", "remote_uri",
-                            "case_relevance_score", "evidence_role", "cache_policy")})
+                        if len(imported) >= 5:
+                            continue
+                        try:
+                            source, created = import_remote_evidence(
+                                db, project, hit["provider_id"], hit["remote_evidence_id"],
+                                config, hit.get("matched_query", ""))
+                        except Exception as exc:  # keep a reference the user can add later
+                            failures.append(f"{hit['title']}：{str(exc)[:120]}")
+                            references.append({k: hit.get(k) for k in (
+                                "title", "provider_id", "remote_evidence_id", "remote_uri",
+                                "case_relevance_score", "evidence_role", "cache_policy")})
+                            continue
+                        if source.id not in ids and source.id not in added:
+                            added.append(source.id)
+                            imported.append(source.id)
                         continue
                     if hit["source_id"] not in ids and hit["source_id"] not in added:
                         db.add(Link(project_id=project_id, source_id=hit["source_id"]))
@@ -204,23 +224,29 @@ def _execute(project_id, run_id, epoch):
                 project.state = {
                     **project.state,
                     "retrieval_done": True,
-                    "retrieval_results": hits,
-                    "remote_knowledge_references": remote_references,
+                    "retrieval_queries": queries,
+                    "retrieval_results": [{k: h.get(k) for k in (
+                        "source_id", "title", "evidence_role", "case_relevance_score",
+                        "source_location", "provider_id", "remote_evidence_id", "matched_query")}
+                        for h in hits],
+                    "remote_knowledge_references": references,
                     "dirty_sources": sorted(
                         set(project.state.get("dirty_sources", []) + added)
                     ),
                     "step": 5,
                     "progress": max(project.state.get("progress", 0), 35),
                 }
-                log(
-                    db,
-                    project_id,
-                    "KNOWLEDGE",
-                    f"本機知識檢索完成，加入 {len(added)} 份相關來源",
-                    {"source_ids": added},
-                )
+                local_added = len(added) - len(imported)
+                summary = (f"共用知識檢索完成（搜尋詞：{'、'.join(queries) or project.name}）："
+                           f"找到 {len(hits)} 筆，加入本機 {local_added} 份、公司檔案服務器 {len(imported)} 份")
+                if failures:
+                    summary += f"；{len(failures)} 份遠端文件僅保留參考"
+                log(db, project_id, "KNOWLEDGE", summary,
+                    {"source_ids": added, "imported": imported, "queries": queries, "failures": failures})
                 log(db, project_id, "ANALYSIS_STARTED", "依來源抽取需求，開始比較證據")
                 db.commit()
+                # Activity rows live in another session; write only after committing.
+                activity.stage("檢索共用知識庫", summary)
             dirty = project.state.get("dirty_sources", [])
             if (
                 project.mode == "AGENT"
@@ -288,6 +314,8 @@ def _execute(project_id, run_id, epoch):
                 extract_sources(db, project, dirty or ids, config) if stale else {}
             )
             extracted.update({sid: [] for sid in rejected})
+            # Sources the user removed retire their assertions in the same apply.
+            extracted.update({sid: [] for sid in project.state.get("removed_sources", [])})
             if stale and not project.current_revision_id and re.search(
                 r"API|電文|資料表|資料庫|介面|系統架構|程式碼|欄位",
                 project.description + " ".join(f.get("statement", "") for facts in extracted.values() for f in facts),
@@ -333,6 +361,8 @@ def _execute(project_id, run_id, epoch):
                 if stale
                 else project.state.get("affected_requirements", [])
             )
+            if stale and project.state.get("removed_sources"):
+                project.state = {**project.state, "removed_sources": []}
             from .model_runtime import enabled
             if enabled(config, "evidence_package"):
                 from .model_assist import evidence_package

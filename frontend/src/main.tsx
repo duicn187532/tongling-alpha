@@ -1228,16 +1228,31 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
       </div>
       <div className="cards">
+        {project?.sources.length === 0 && <p className="muted">尚未加入依據。可在上一步輸入需求、上傳文件，或到「知識檢索」加入共用知識。</p>}
         {project?.sources.map((s: any) => (
           <article className="card" key={s.id}>
-            <span className="badge">{s.kind}</span>
+            <span className="badge">{SOURCE_KIND_LABELS[s.kind] || s.kind}</span>
             <h3>{s.title}</h3>
             <p className="clamp">{s.content}</p>
             <div className="row">
               <small>
-                {s.provider} · {s.status}
+                {s.provider === "KNOWLEDGE_SERVER" ? `公司檔案服務器${s.meta?.excerpt_only ? "（片段）" : ""}` : s.meta?.library_scope === "GLOBAL" ? "共用知識庫" : "本案文件"}
               </small>
               {sourceButton(s.id)}
+              <button
+                className="text-button danger-text"
+                disabled={busy || project.runtime === "RUNNING"}
+                title={project.runtime === "RUNNING" ? "Agent 執行中，請先暫停" : "從本案移除，共用知識庫原文不會刪除"}
+                onClick={() => {
+                  if (!window.confirm(`從本案移除「${s.title}」？由它產生的需求證據會一併撤下；共用知識庫原文不會刪除。`)) return;
+                  void act(async () => {
+                    const result = await api(`/projects/${pid}/sources/${s.id}`, "DELETE");
+                    setNotice(result.message);
+                  });
+                }}
+              >
+                移除依據
+              </button>
             </div>
           </article>
         ))}
@@ -1401,21 +1416,27 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <small>{r.reason}</small>
               <div className="actions">
                 {r.source_location !== "REMOTE" && sourceButton(r.source_id)}
-                {r.source_location !== "REMOTE" && <button
-                  disabled={
-                    busy ||
-                    project.sources.some((s: any) => s.id === r.source_id)
-                  }
-                  onClick={() =>
-                    act(() =>
-                      api("/projects/" + pid + "/knowledge/attach", "POST", {
-                        source_id: r.source_id,
-                      }),
-                    )
-                  }
-                >
-                  加入專案來源
-                </button>}
+                {(() => {
+                  const attached = r.source_location === "REMOTE"
+                    ? project.sources.some((s: any) => s.meta?.remote_key === `${r.provider_id}:${r.remote_evidence_id}`)
+                    : project.sources.some((s: any) => s.id === r.source_id);
+                  return <button
+                    className={attached ? "" : "primary"}
+                    disabled={busy || attached}
+                    onClick={() =>
+                      act(async () => {
+                        const result = r.source_location === "REMOTE"
+                          ? await api("/projects/" + pid + "/knowledge/attach-remote", "POST", {
+                            provider_id: r.provider_id, remote_evidence_id: r.remote_evidence_id, query,
+                          })
+                          : await api("/projects/" + pid + "/knowledge/attach", "POST", { source_id: r.source_id });
+                        setNotice(`${result.message}。重新分析後會納入需求比對。`);
+                      })
+                    }
+                  >
+                    {attached ? "✓ 已是專案依據" : "加入專案依據"}
+                  </button>;
+                })()}
               </div>
             </article>
           ))}
@@ -2970,6 +2991,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
     </div>
   );
 }
+
+const SOURCE_KIND_LABELS: Record<string, string> = {
+  REQUIREMENT_TEXT: "需求說明", REQUIREMENT_DOCUMENT: "需求文件", USER_UPLOAD: "一般文件",
+  BUSINESS_KNOWLEDGE: "業務知識", INTERNAL_POLICY: "內部規範", TECH_SPEC: "技術規格",
+  COMPETITOR: "競品參考", HISTORICAL_PRD: "歷史 PRD", MEETING_RECORD: "會議紀錄",
+  EXTERNAL_RESEARCH: "外部研究",
+};
 
 function Entry() {
   const [context, setContext] = useState<any>(null);

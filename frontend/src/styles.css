@@ -1249,3 +1249,5 @@ summary {
 .demo-banner { padding: 6px 16px; background: var(--warning-surface, #fff6e6); color: var(--warning, #8a5f25); border-bottom: 1px solid var(--warning, #e3c38a); font-size: 13px; text-align: center; }
 .access-mode-options { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 8px 0; }
 .access-mode-options label { display: flex; align-items: center; gap: 6px; font-weight: normal; }
+
+.text-button.danger-text { color: var(--error, #b42318); }
