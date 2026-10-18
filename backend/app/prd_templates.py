@@ -163,10 +163,10 @@ def canonical_v2(content):
         ]
 
     for field, pattern in {
-        "business_rules": "限額|費用|費率|資格|條件|規則|rule|limit",
-        "risk_compliance_security": "資安|風險|法遵|驗證|稽核|加密|個資|security|risk",
+        # Business rules, controls and NFRs are not copied from requirement
+        # text by keyword (that only repeated each requirement); the PM fills
+        # them through the PRD gap questions instead.
         "data_impact": "資料|保存|欄位|data|database",
-        "nonfunctional_requirements": "效能|可用|延遲|秒|容量|復原|performance",
         "api_message_impact": "API|電文|介面|interface",
         "batch_integration_impact": "批次|排程|整合|batch",
     }.items():
@@ -177,6 +177,10 @@ def canonical_v2(content):
             if not isinstance(x, dict) or not x.get("requirement_id")
         ]
         content[field] = independent + matches(pattern, field)
+    for field in ("business_rules", "risk_compliance_security", "nonfunctional_requirements"):
+        # Drop rows an older version copied from requirement text by keyword.
+        content[field] = [x for x in content.get(field, [])
+                          if not (isinstance(x, dict) and x.get("requirement_id") and not x.get("decision"))]
     content["decisions"] = [
         {
             "requirement_id": r["id"],
@@ -268,6 +272,9 @@ def project(content, template, version="草稿"):
             block["rows"] = [
                 {
                     "id": "REQ-" + r["id"][:8],
+                    "requirement_id": r["id"],
+                    "priority": r.get("priority", "待確認"),
+                    "actor": r.get("actor", "待確認"),
                     "title": r["topic"],
                     "description": r["statement"],
                     "detail": f"優先級：{r.get('priority', '待確認')} · 角色：{r.get('actor', '待確認')} · 證據 {len(r.get('evidence', []))} 筆",

@@ -823,6 +823,8 @@ v7_api.register(app, get_db, get)
 knowledge_api.register(app, get_db, get)
 knowledge_management.register(app, get_db)
 project_hub.register(app, get_db, get)
+from . import prd_editor  # noqa: E402
+prd_editor.register(app, get_db, get)
 
 
 @app.get("/api/projects")

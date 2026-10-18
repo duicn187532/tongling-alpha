@@ -209,6 +209,7 @@ def create_draft(db, project):
             "status": r.status,
             "decision": r.decision,
             "evidence": r.evidence,
+            **{key: r.decision[key] for key in ("priority", "actor") if r.decision.get(key)},
         }
         for r in accepted
         if r.status != "EXCLUDED" and r.decision.get("category", "FUNCTIONAL") == "FUNCTIONAL"
@@ -390,6 +391,9 @@ def create_draft(db, project):
         for r in accepted
         if r.decision.get("category") == "DECISION_CONTEXT"
     ]
+    # Sections the PM wrote or answered on an earlier draft carry over.
+    from .prd_editor import apply_edits
+    content = apply_edits(content, (project.state or {}).get("prd_edits"))
     from .db import ResearchRun
 
     research = db.scalar(

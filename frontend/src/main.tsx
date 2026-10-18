@@ -10,6 +10,7 @@ import { ClientApp } from "./ClientApp";
 import { KnowledgePanel, jobLabel } from "./KnowledgePanel";
 import { ProjectManager } from "./ProjectManager";
 import { TechnicalDeliveryPanel } from "./TechnicalDeliveryPanel";
+import { GapPanel, RequirementRowEditor } from "./PrdEditor";
 import { ProjectHub } from "./ProjectHub";
 import { AppearanceSettings, initAppearanceRuntime } from "./AppearanceSettings";
 import { QueueSettings } from "./QueueSettings";
@@ -41,7 +42,7 @@ const steps = [
   "會議助理",
   "變更分析",
   "提案審閱",
-  "流程／架構",
+  "IT 交付",
   "預覽 PRD",
   "版本與下載",
 ];
@@ -1066,7 +1067,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     return () => { live = false; };
   }, [revision?.id, revision?.content_hash]);
   useEffect(() => {
-    if (page !== 8 || !revision?.id || !showItReference) { setDeliveryCheck(null); return; }
+    if (page !== 7 || !revision?.id || !showItReference) { setDeliveryCheck(null); return; }
     let live = true;
     api(`/prd-revisions/${revision.id}/delivery-readiness`)
       .then((result) => { if (live) setDeliveryCheck(result); })
@@ -1774,29 +1775,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
     if (page === 7)
       return (
         <>
-          <h2>可追溯的圖表來源</h2>
-          <p>
-            先產生 PRD
-            草稿，再檢視圖表。未有技術來源時，系統架構會明確保留待確認。
-          </p>
-          {revision ? (
-            revision.content.diagrams.map((d: any, i: number) => (
-              <DiagramEditor
-                revision={revision}
-                act={act}
-                key={revision.id + i + d.mermaid}
-                diagram={d}
-                index={i}
-              />
-            ))
-          ) : (
-            <button onClick={() => setPage(6)}>前往需求審閱</button>
-          )}
-        </>
-      );
-    if (page === 8)
-      return (
-        <>
+          <h2>IT 交付</h2>
+          <p>給 SA／IT 的技術設計、交付缺項與圖表。業務 PRD 可以先定版，這裡的內容另外審閱。</p>
+          {revision ? <>
           {revision && <TechnicalDeliveryPanel revision={revision} sources={project?.sources || []} requirements={project?.requirements || []} isClient={isClient} act={act} onRevisionCreated={setRevisionId} />}
           {revision && <section className="card delivery-readiness" aria-label="PRD 缺項參考">
             <div className="row"><div><span className="eyebrow">OPTIONAL REFERENCE</span><h2>PRD 缺項參考</h2></div>
@@ -1819,6 +1800,23 @@ function App({ isClient = false }: { isClient?: boolean }) {
               })}
             </div>}</>}
           </section>}
+            {revision.content.diagrams.map((d: any, i: number) => (
+              <DiagramEditor
+                revision={revision}
+                act={act}
+                key={revision.id + i + d.mermaid}
+                diagram={d}
+                index={i}
+              />
+            ))}
+          </> : (
+            <div className="empty"><p>先產生 PRD 草稿，才會有技術設計與圖表。</p></div>
+          )}
+        </>
+      );
+    if (page === 8)
+      return (
+        <>
           <div className="section-head">
             <div>
               <h2>PRD 預覽</h2>
@@ -1849,7 +1847,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   </a>
                 </div>
               )}
-              <p>確認內容與圖表後，可建立不可覆寫的業務基準版本。上方缺項清單供補強參考，不阻擋業務定版。</p>
+              <p>回答下方問題補齊空白章節，或直接編修需求；確認後建立不可覆寫的業務基準版本。</p>
             </div>
             {revision?.status === "IN_REVIEW" && (
               <button
@@ -1870,6 +1868,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               </button>
             )}
           </div>
+          {revision && revision.id === project.state.draft_id && <GapPanel revision={revision} onChange={() => void refresh()} />}
           {prdAdvice?.result && revision && prdAdvice.revision_hash === revision.content_hash && <section className="card">
             <h3>AI 候選建議 · 不改寫已確認 PRD</h3>
             {prdAdvice.result.candidates?.map((item: any, i: number) => <div className="prd-row" key={i}>
@@ -1921,6 +1920,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
                               <h3>{row.title}</h3>
                               <p>{row.description}</p>
                               {row.detail && <small>{row.detail}</small>}
+                              {section.key === "requirements" && revision.id === project.state.draft_id &&
+                                <RequirementRowEditor revision={revision} row={row} onChange={() => void refresh()} />}
                               {row.source_refs?.length > 0 && (
                                 <details>
                                   <summary>

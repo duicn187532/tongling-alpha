@@ -354,10 +354,8 @@ def test_revision_derived_fields_refresh_only_linked_rows():
     content["business_rules"].append("獨立政策保留")
     content["requirements"][0]["statement"] = "費用 20 元"
     prd_templates.canonical_v2(content)
-    assert content["business_rules"] == [
-        "獨立政策保留",
-        {"requirement_id": "one", "description": "費用 20 元", "source_refs": []},
-    ]
+    # PM-written rules survive; requirement text is no longer copied in by keyword.
+    assert content["business_rules"] == ["獨立政策保留"]
 
 
 def test_rejected_alias_and_incomplete_graph_still_uses_hybrid(client, project):
