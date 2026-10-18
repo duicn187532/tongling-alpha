@@ -114,8 +114,10 @@ async function serveStatic(request, response, pathname, distDir) {
     return;
   }
   try {
-    const [actual, info] = await Promise.all([realpath(candidate), stat(candidate)]);
-    if (!actual.startsWith(`${dist}${path.sep}`) || !info.isFile()) {
+    // Compare real paths on both sides: Windows short names (RUNNER~1) and
+    // symlinked install folders differ from realpath()'s long form.
+    const [actual, realDist, info] = await Promise.all([realpath(candidate), realpath(dist), stat(candidate)]);
+    if (!actual.startsWith(`${realDist}${path.sep}`) || !info.isFile()) {
       sendJson(response, 404, { detail: "找不到頁面" });
       return;
     }
