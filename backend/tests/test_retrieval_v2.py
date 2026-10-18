@@ -81,7 +81,15 @@ def test_aggregation():
 
 
 def test_cross_encoder_raw_logits_are_transformed_consistently(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
     import app.retrieval_providers as providers
+
+    class FakeIdentity:
+        pass
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        nn=SimpleNamespace(Identity=FakeIdentity)))
 
     model_path = tmp_path / "model"
     model_path.mkdir()
@@ -89,10 +97,8 @@ def test_cross_encoder_raw_logits_are_transformed_consistently(tmp_path, monkeyp
 
     class FakeModel:
         def predict(self, pairs, **kwargs):
-            from torch import nn
-
             assert len(pairs) == 3
-            assert isinstance(kwargs["activation_fn"], nn.Identity)
+            assert isinstance(kwargs["activation_fn"], FakeIdentity)
             return np.array([-0.1, 0.2, 1.2])
 
     monkeypatch.setattr(providers, "_local_cross_encoder", lambda *args: FakeModel())
