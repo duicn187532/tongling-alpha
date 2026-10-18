@@ -4,6 +4,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { createReadStream } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createGzip } from "node:zlib";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +25,17 @@ const TYPES = {
   ".woff2": "font/woff2",
 };
 
+// Private address literals cannot be DNS-rebound, so the client role may accept
+// them when it is deliberately bound to the LAN for classroom demos.
+function privateAddress(hostname) {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(bare) === 4) {
+    const [a, b] = bare.split(".").map(Number);
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  return isIP(bare) === 6 && /^(f[cd]|fe80|::1$)/i.test(bare);
+}
+
 function sendJson(response, status, body) {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -43,6 +55,7 @@ async function allowedHost(hostHeader, role, urlFile) {
     return true;
   }
   if (role !== "client") return false;
+  if (privateAddress(hostname)) return true;
   try {
     return hostname === new URL((await readFile(urlFile, "utf8")).trim()).hostname.toLowerCase();
   } catch {
@@ -51,12 +64,16 @@ async function allowedHost(hostHeader, role, urlFile) {
 }
 
 function proxyApi(request, response, apiPort) {
+  // Append the real peer so the API sees LAN vs tunnel visitors; earlier hops
+  // are only trusted by the API when they come from loopback.
+  const peer = (request.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+  const forwarded = request.headers["x-forwarded-for"];
   const upstream = httpRequest({
     hostname: "127.0.0.1",
     port: apiPort,
     method: request.method,
     path: request.url,
-    headers: request.headers,
+    headers: { ...request.headers, "x-forwarded-for": forwarded ? `${forwarded}, ${peer}` : peer },
   }, (received) => {
     response.writeHead(received.statusCode ?? 502, received.headers);
     received.pipe(response);
@@ -161,8 +178,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port = Number(process.argv[3]);
   const apiPort = Number(process.argv[4]);
   const server = createFrontendServer({ role, apiPort });
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`TongLing ${role} frontend: http://127.0.0.1:${port} (API ${apiPort})`);
+  // Only the restricted client role may be exposed to the LAN, never the host UI.
+  const bind = role === "client" && process.env.TONGLING_CLIENT_BIND === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+  server.listen(port, bind, () => {
+    console.log(`TongLing ${role} frontend: http://${bind}:${port} (API ${apiPort})`);
   });
   server.on("error", (error) => {
     console.error(error);

@@ -33,7 +33,7 @@ test("host frontend serves the built bundle and forwards API requests", async (t
   await writeFile(path.join(temp, "assets", "app.js"), "const greeting = 'TongLing';\n".repeat(100));
   const api = createServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ path: request.url, host: request.headers.host }));
+    response.end(JSON.stringify({ path: request.url, host: request.headers.host, forwarded: request.headers["x-forwarded-for"] }));
   });
   const apiPort = await listen(api);
   t.after(() => api.close());
@@ -51,7 +51,11 @@ test("host frontend serves the built bundle and forwards API requests", async (t
   assert.match(gunzipSync(asset.body).toString(), /TongLing/);
   assert.equal(asset.headers["cache-control"], "public, max-age=31536000, immutable");
   const proxied = await get(frontPort, "/api/health?check=1");
-  assert.deepEqual(JSON.parse(proxied.body), { path: "/api/health?check=1", host: `127.0.0.1:${frontPort}` });
+  assert.deepEqual(JSON.parse(proxied.body), { path: "/api/health?check=1", host: `127.0.0.1:${frontPort}`, forwarded: "127.0.0.1" });
+  // A spoofed hop stays left of the real peer, which the API trusts instead.
+  const spoofed = await get(frontPort, "/api/health", { "x-forwarded-for": "192.168.1.9" });
+  assert.equal(JSON.parse(spoofed.body).forwarded, "192.168.1.9, 127.0.0.1");
+  assert.equal((await get(frontPort, "/", { host: "192.168.1.5:5173" })).status, 400);
   assert.equal((await get(frontPort, "/assets/%2e%2e/index.html")).status, 404);
 });
 
@@ -67,5 +71,7 @@ test("client frontend accepts only the active tunnel host", async (t) => {
 
   assert.equal((await get(port, "/", { host: "example.ngrok-free.dev" })).status, 200);
   assert.equal((await get(port, "/", { host: "wrong.example.com" })).status, 400);
+  assert.equal((await get(port, "/", { host: "192.168.1.5:8002" })).status, 200);
+  assert.equal((await get(port, "/", { host: "8.8.8.8:8002" })).status, 400);
   assert.equal((await get(port, "/settings", { host: "example.ngrok-free.dev" })).status, 404);
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { ActivityCards } from "./ActivityCards";
@@ -762,10 +762,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
   const [homeOpen, setHomeOpen] = useState(() => !location.hash.slice(1) || location.hash === "#hub");
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
-    [busy, setBusy] = useState(false),
-    [pair, setPair] = useState(false);
-  const [pairCode, setPairCode] = useState(""),
-    [createOpen, setCreateOpen] = useState(false),
+    [busy, setBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false),
     [name, setName] = useState(""),
     [brief, setBrief] = useState("");
   const [guidance, setGuidance] = useState<any>(null);
@@ -992,9 +990,6 @@ function App({ isClient = false }: { isClient?: boolean }) {
   }
   useEffect(() => {
     load().catch((e) => setError(e.message));
-    const listener = () => setPair(true);
-    window.addEventListener("pair-required", listener);
-    return () => window.removeEventListener("pair-required", listener);
   }, []);
   useEffect(() => {
     if (!pid) return;
@@ -2756,7 +2751,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 ["routing", "模型路由"],
                 ["queue", "展示併發"],
                 ["projects", "專案管理"],
-                ["access", "分享存取"],
+                ["access", "伺服器／客戶端連線"],
               ].map(([key, title]) => (
                 <button
                   key={key}
@@ -2972,36 +2967,6 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </div>
         </div>
       )}
-      {pair && (
-        <div className="overlay">
-          <section
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="配對裝置"
-          >
-            <h2>連接你的彤靈工作台</h2>
-            <p>輸入 Runtime 啟動視窗顯示的配對碼。</p>
-            <input
-              aria-label="配對碼"
-              value={pairCode}
-              onChange={(e) => setPairCode(e.target.value)}
-            />
-            <button
-              className="primary"
-              onClick={() =>
-                act(async () => {
-                  await api("/pair", "POST", { code: pairCode });
-                  setPair(false);
-                  await load();
-                })
-              }
-            >
-              配對
-            </button>
-          </section>
-        </div>
-      )}
     </div>
   );
 }
@@ -3009,17 +2974,48 @@ function App({ isClient = false }: { isClient?: boolean }) {
 function Entry() {
   const [context, setContext] = useState<any>(null);
   const [error, setError] = useState("");
-  function refreshContext() {
-    api("/session/context").then(setContext).catch((e) => setError(e.message));
-  }
-  useEffect(refreshContext, []);
+  const [demoError, setDemoError] = useState("");
+  const refreshContext = useCallback(async () => {
+    try {
+      let next = await api("/session/context");
+      // The server decides the mode; demo browsers receive their own session.
+      if (next.role === "CLIENT" && !next.authenticated && next.demo_available) {
+        try {
+          await api("/session/demo", "POST");
+          next = await api("/session/context");
+          setDemoError("");
+        } catch (e) {
+          setDemoError((e as Error).message);
+        }
+      }
+      setContext(next);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshContext();
+    const listener = () => void refreshContext();
+    window.addEventListener("pair-required", listener);
+    return () => window.removeEventListener("pair-required", listener);
+  }, [refreshContext]);
+  const isClient = context?.role === "CLIENT";
+  useEffect(() => {
+    if (!isClient) return;
+    // Mode switches on the host take effect without a manual reload.
+    const timer = window.setInterval(() => void refreshContext(), context?.authenticated ? 30000 : 8000);
+    return () => clearInterval(timer);
+  }, [isClient, context?.authenticated, refreshContext]);
   if (error) return <p role="alert" className="feedback warning">無法連接彤靈：{error}</p>;
   if (!context) return <p role="status" className="execution-card">正在連接彤靈…</p>;
-  return context.role === "CLIENT"
-    ? context.authenticated
-      ? <App isClient />
-      : <ClientApp authenticated={false} onPaired={refreshContext} />
-    : <App />;
+  if (!isClient) return <App />;
+  if (!context.authenticated)
+    return <ClientApp mode={context.mode} demoReason={demoError || context.demo_reason} onPaired={() => void refreshContext()} />;
+  return <>
+    {context.session_kind === "DEMO" && <div className="demo-banner" role="status">展示模式：此瀏覽器使用獨立的展示連線，你的專案與其他人分開；請勿輸入真實客戶資料。</div>}
+    <App isClient />
+  </>;
 }
 
 initAppearanceRuntime();

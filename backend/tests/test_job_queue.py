@@ -68,9 +68,20 @@ def test_queue_capacity_and_per_user_limit_are_rejected(client):
 
 
 def test_demo_without_pairing_still_uses_distinct_sessions(client, monkeypatch):
+    assert client.put("/api/admin/client-access/mode", json={"mode": "demo"}).status_code == 200
+    client_gateway.DEMO_ISSUES.clear()
     monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
-    monkeypatch.setattr(client_gateway, "DEMO_NO_PAIR", True)
+    try:
+        _demo_queue_isolation()
+    finally:
+        monkeypatch.setattr(client_gateway, "IS_GATEWAY", False)
+        client.put("/api/admin/client-access/mode", json={"mode": "pairing"})
+
+
+def _demo_queue_isolation():
     with TestClient(app, base_url="https://testserver") as alice, TestClient(app, base_url="https://testserver") as bob:
+        assert alice.post("/api/session/demo").status_code == 200
+        assert bob.post("/api/session/demo").status_code == 200
         assert alice.get("/api/session/context").json()["authenticated"] is True
         assert bob.get("/api/session/context").json()["authenticated"] is True
         a = alice.post("/api/projects", json={"name": "Alice 展示", "description": "帳單提醒"}).json()

@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import hmac
 import ipaddress
 import json
 import os
@@ -83,11 +81,6 @@ from . import workspace_files
 from . import activity
 from . import prd_templates, enrichment, v7_api, retrieval, project_lifecycle, knowledge_api, knowledge_management, client_gateway, job_queue
 
-LAN = os.getenv("TONGLING_LAN") == "1"
-PAIR_CODE = secrets.token_urlsafe(9)
-PAIR_EXPIRES = time.time() + 600
-sessions = {}
-attempts = {}
 
 
 def _recover_startup_state():
@@ -150,8 +143,6 @@ async def lifespan(app):
     # recover interrupted work. Restarting a gateway must not pause a live Agent.
     if not client_gateway.IS_GATEWAY:
         _recover_startup_state()
-    if LAN:
-        print(f"TongLing pairing code (10 min): {PAIR_CODE}", flush=True)
     if not client_gateway.IS_GATEWAY:
         enrichment.start()
         job_queue.start()
@@ -185,37 +176,24 @@ async def access_control(request, call_next):
         hostname = request.url.hostname or ""
         public_url = client_gateway.tunnel_url()
         public_host = urlparse(public_url).hostname
-        if hostname not in {"localhost", "127.0.0.1", "testserver", public_host}:
+        if (hostname not in {"localhost", "127.0.0.1", "testserver", public_host}
+                and not client_gateway.private_ip_host(hostname)):
             return JSONResponse({"detail": "不允許的客戶端網址"}, status_code=400)
         path = request.url.path
         if not path.startswith("/api/"):
             return JSONResponse({"detail": "找不到頁面"}, status_code=404)
-        if request.url.path.startswith("/api/") and not client_gateway.client_route_allowed(request.method, request.url.path):
+        if not client_gateway.client_route_allowed(request.method, path):
             return JSONResponse({"detail": "此操作只供彤靈主機管理"}, status_code=403)
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if origin and urlparse(origin).netloc != request.headers.get("host"):
                 return JSONResponse({"detail": "跨來源寫入不被允許"}, status_code=403)
-        if (client_gateway.DEMO_NO_PAIR and request.url.path.startswith("/api/")
-                and request.url.path not in {"/api/health", "/api/pair", "/api/logout"}):
-            client_id = client_gateway.session_client(request.cookies.get("tongling_session", ""))
-            token = None
-            if not client_id:
-                client_id = secrets.token_urlsafe(24)
-                token = client_gateway.new_session(client_id)
-            context_token = client_gateway.CURRENT_CLIENT.set(client_id)
-            try:
-                response = await served()
-                if token:
-                    response.set_cookie("tongling_session", token, httponly=True, samesite="lax",
-                                        secure=request.url.scheme == "https", max_age=client_gateway.SESSION_TTL)
-                return response
-            finally:
-                client_gateway.CURRENT_CLIENT.reset(context_token)
-        if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/pair", "/api/session/context"}:
+        if path not in {"/api/health", "/api/pair", "/api/session/context", "/api/session/demo"}:
             client_id = client_gateway.session_client(request.cookies.get("tongling_session", ""))
             if not client_id:
-                return JSONResponse({"detail": "請輸入主機提供的配對碼"}, status_code=401)
+                demo = client_gateway.access_config()["mode"] == "demo"
+                return JSONResponse({"detail": "展示連線已失效，正在重新連線" if demo
+                                     else "請輸入主機提供的配對碼"}, status_code=401)
             context_token = client_gateway.CURRENT_CLIENT.set(client_id)
             try:
                 return await served()
@@ -240,16 +218,6 @@ async def access_control(request, call_next):
             and origin not in {"http://localhost:5173", "http://127.0.0.1:5173"}
         ):
             return JSONResponse({"detail": "跨來源寫入不被允許"}, status_code=403)
-    if (
-        LAN
-        and request.url.path.startswith("/api/")
-        and request.url.path not in {"/api/health", "/api/pair"}
-    ):
-        token = request.cookies.get("tongling_session", "")
-        if sessions.get(hashlib.sha256(token.encode()).hexdigest(), 0) < time.time():
-            return JSONResponse(
-                {"detail": "請先使用啟動視窗的配對碼登入"}, status_code=401
-            )
     return await served()
 
 
@@ -434,15 +402,47 @@ class SettingsInput(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.7.6", "lan": LAN, "gateway": client_gateway.IS_GATEWAY}
+    return {"status": "ok", "version": app.version, "gateway": client_gateway.IS_GATEWAY}
+
+
+def _client_address(request):
+    return request.client.host if request.client else ""
 
 
 @app.get("/api/session/context")
 def session_context(request: Request):
     if client_gateway.IS_GATEWAY:
-        owner = client_gateway.CURRENT_CLIENT.get() or client_gateway.session_client(request.cookies.get("tongling_session", ""))
-        return {"role": "CLIENT", "authenticated": bool(owner)}
+        info = client_gateway.session_info(request.cookies.get("tongling_session", ""))
+        mode = client_gateway.access_config()["mode"]
+        blocked = client_gateway.demo_block_reason(_client_address(request), request.url.hostname) if mode == "demo" else ""
+        return {"role": "CLIENT", "authenticated": bool(info), "mode": mode,
+                "session_kind": info[1] if info else None,
+                "demo_available": mode == "demo" and not blocked, "demo_reason": blocked}
     return {"role": "HOST", "authenticated": True}
+
+
+@app.post("/api/session/demo")
+def start_demo_session(request: Request, response: Response):
+    """Demo mode skips the code, never the session: each browser gets its own owner id."""
+    if not client_gateway.IS_GATEWAY:
+        raise HTTPException(404, "找不到頁面")
+    info = client_gateway.session_info(request.cookies.get("tongling_session", ""))
+    if info:
+        return {"paired": True, "session_kind": info[1], "reused": True}
+    address = _client_address(request)
+    reason = client_gateway.demo_block_reason(address, request.url.hostname)
+    if reason:
+        raise HTTPException(403, reason)
+    client_id = request.cookies.get("tongling_client_id") or secrets.token_urlsafe(32)
+    try:
+        token = client_gateway.issue_demo_session(address, client_id)
+    except PermissionError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    secure = request.url.scheme == "https"
+    response.set_cookie("tongling_client_id", client_id, httponly=True, samesite="lax", secure=secure, max_age=30 * 86400)
+    response.set_cookie("tongling_session", token, httponly=True, samesite="lax", secure=secure,
+                        max_age=client_gateway.DEMO_SESSION_TTL)
+    return {"paired": True, "session_kind": "DEMO", "reused": False}
 
 
 @app.get("/api/client/workspace-config")
@@ -458,28 +458,38 @@ def client_workspace_config(db=Depends(get_db)):
 
 
 @app.get("/api/admin/client-access")
-def client_access(request: Request):
-    if client_gateway.IS_GATEWAY or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
-        raise HTTPException(403, "僅供主機本機瀏覽器查看")
-    return {**client_gateway.pairing_details(), "url": client_gateway.tunnel_url()}
+def client_access(request: Request, db=Depends(get_db)):
+    _host_admin(request)
+    return {**client_gateway.pairing_details(), "url": client_gateway.tunnel_url(),
+            **client_gateway.access_config(db), "demo_session_hours": client_gateway.DEMO_SESSION_TTL // 3600,
+            "demo_max_sessions": client_gateway.DEMO_MAX_ACTIVE}
+
+
+class ClientAccessModeInput(BaseModel):
+    mode: Literal["pairing", "demo"]
+    demo_network: Literal["LAN", "PUBLIC"] = "LAN"
+
+
+@app.put("/api/admin/client-access/mode")
+def save_client_access_mode(body: ClientAccessModeInput, request: Request, db=Depends(get_db)):
+    # Only the loopback-bound host process may change who can enter; the gateway
+    # process refuses this path before it reaches any handler.
+    _host_admin(request)
+    return client_gateway.save_access_config(db, body.mode, body.demo_network)
 
 
 @app.get("/api/admin/client-sessions")
 def client_sessions(request: Request, db=Depends(get_db)):
-    if client_gateway.IS_GATEWAY or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
-        raise HTTPException(403, "僅供主機本機瀏覽器查看")
-    from .db import ClientSession
-    return [{"id": row.id, "client_label": row.client_id[:8],
+    _host_admin(request)
+    return [{"id": row.id, "client_label": row.client_id[:8], "kind": row.kind,
              "created_at": row.created_at, "expires_at": row.expires_at,
-             "revoked": bool(row.revoked_at)}
+             "last_seen_at": row.last_seen_at, "revoked": bool(row.revoked_at)}
             for row in db.scalars(select(ClientSession).order_by(ClientSession.created_at.desc()).limit(100))]
 
 
 @app.post("/api/admin/client-sessions/{session_id}/revoke")
 def revoke_client_session(session_id: str, request: Request, db=Depends(get_db)):
-    if client_gateway.IS_GATEWAY or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
-        raise HTTPException(403, "僅供主機本機瀏覽器查看")
-    from .db import ClientSession
+    _host_admin(request)
     row = db.get(ClientSession, session_id)
     if not row:
         raise HTTPException(404, "找不到配對紀錄")
@@ -489,56 +499,26 @@ def revoke_client_session(session_id: str, request: Request, db=Depends(get_db))
 
 @app.post("/api/pair")
 async def pair(request: Request, response: Response):
+    if not client_gateway.IS_GATEWAY:
+        raise HTTPException(404, "主機工作台不需要配對")
     body = await request.json()
-    if client_gateway.IS_GATEWAY:
-        address = request.client.host
-        recent = [t for t in client_gateway.ATTEMPTS.get(address, []) if time.time() - t < 60]
-        client_gateway.ATTEMPTS[address] = recent + [time.time()]
-        if len(recent) >= 5:
-            raise HTTPException(429, "配對嘗試過多，請稍後再試")
-        if not client_gateway.check_pairing(body.get("code", "")):
-            raise HTTPException(401, "配對碼無效或已過期，請向主機索取新碼")
-        client_id = request.cookies.get("tongling_client_id") or secrets.token_urlsafe(32)
-        token = client_gateway.new_session(client_id)
-        response.set_cookie("tongling_client_id", client_id, httponly=True, samesite="lax", secure=True, max_age=30 * 86400)
-        response.set_cookie("tongling_session", token, httponly=True, samesite="lax", secure=True, max_age=client_gateway.SESSION_TTL)
-        return {"paired": True}
-    address = request.client.host
-    recent = [t for t in attempts.get(address, []) if time.time() - t < 60]
-    attempts[address] = recent + [time.time()]
+    address = _client_address(request)
+    recent = [t for t in client_gateway.ATTEMPTS.get(address, []) if time.time() - t < 60]
+    client_gateway.ATTEMPTS[address] = recent + [time.time()]
     if len(recent) >= 5:
         raise HTTPException(429, "配對嘗試過多，請稍後再試")
-    if (
-        not LAN
-        or time.time() > PAIR_EXPIRES
-        or not hmac.compare_digest(str(body.get("code", "")), PAIR_CODE)
-    ):
-        raise HTTPException(401, "配對碼無效或已過期，請重新啟動 LAN 模式")
-    token = secrets.token_urlsafe(32)
-    sessions[hashlib.sha256(token.encode()).hexdigest()] = time.time() + 12 * 3600
-    response.set_cookie(
-        "tongling_session",
-        token,
-        httponly=True,
-        samesite="strict",
-        max_age=43200,
-        secure=request.url.scheme == "https",
-    )
+    if not client_gateway.check_pairing(body.get("code", "")):
+        raise HTTPException(401, "配對碼無效或已過期，請向主機索取新碼")
+    client_id = request.cookies.get("tongling_client_id") or secrets.token_urlsafe(32)
+    token = client_gateway.new_session(client_id)
+    response.set_cookie("tongling_client_id", client_id, httponly=True, samesite="lax", secure=True, max_age=30 * 86400)
+    response.set_cookie("tongling_session", token, httponly=True, samesite="lax", secure=True, max_age=client_gateway.SESSION_TTL)
     return {"paired": True}
 
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
-    if client_gateway.IS_GATEWAY:
-        client_gateway.revoke_session(request.cookies.get("tongling_session", ""))
-        response.delete_cookie("tongling_session")
-        return {"ok": True}
-    sessions.pop(
-        hashlib.sha256(
-            request.cookies.get("tongling_session", "").encode()
-        ).hexdigest(),
-        None,
-    )
+    client_gateway.revoke_session(request.cookies.get("tongling_session", ""))
     response.delete_cookie("tongling_session")
     return {"ok": True}
 
@@ -669,7 +649,8 @@ def save_settings(body: SettingsInput, db=Depends(get_db)):
     for task in TASK_ROLES:
         route(config, task)
     row = db.scalar(select(Workspace))
-    row.settings = config
+    # Keys owned by other screens (client access mode) survive a model-settings save.
+    row.settings = {**(row.settings or {}), **config}
     return config
 
 

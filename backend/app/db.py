@@ -62,6 +62,7 @@ class ClientSession(Row, Base):
     expires_at: Mapped[int] = mapped_column(Integer)
     revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_seen_at: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(16), default="PAIRED", server_default="PAIRED")
 
 
 class AppJob(Row, Base):
