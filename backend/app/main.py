@@ -916,6 +916,28 @@ def cancel_job(jid: str, db=Depends(get_db)):
     return job_queue.public(job)
 
 
+@app.post("/api/jobs/{jid}/dismiss")
+def dismiss_job(jid: str, db=Depends(get_db)):
+    job = db.get(AppJob, jid)
+    if not job or job.session_id != job_queue.owner_id():
+        raise HTTPException(404, "找不到工作")
+    if job.status not in job_queue.TERMINAL:
+        raise HTTPException(409, "工作仍在執行，完成後才能清除")
+    job.dismissed_at = now()
+    return job_queue.public(job, include_result=False)
+
+
+@app.post("/api/activities/{aid}/dismiss")
+def dismiss_activity(aid: str, db=Depends(get_db)):
+    row = get(db, Activity, aid)
+    if row.project_id is None and client_gateway.CURRENT_CLIENT.get():
+        raise HTTPException(404, "找不到資料")
+    if row.status in {"RUNNING", "QUEUED"}:
+        raise HTTPException(409, "工作仍在執行，完成後才能清除")
+    row.dismissed_at = now()
+    return serialize(row)
+
+
 @app.post("/api/jobs/{jid}/resume", status_code=202)
 def resume_job(jid: str, db=Depends(get_db)):
     db.execute(text("BEGIN IMMEDIATE"))

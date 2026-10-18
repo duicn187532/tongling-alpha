@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { ActivityCards } from "./ActivityCards";
+import { ActivityCards, noticeVisible } from "./ActivityCards";
 import { V7Settings } from "./V7Settings";
 import { KnowledgeSettings } from "./KnowledgeSettings";
 import { HostAccess } from "./HostAccess";
@@ -660,6 +660,21 @@ function App({ isClient = false }: { isClient?: boolean }) {
     const timer = window.setInterval(refreshJobs, 5000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
+  async function dismissJob(id: string) {
+    try {
+      updateJob(await api<Job>(`/jobs/${id}/dismiss`, "POST"));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function dismissActivity(id: string) {
+    try {
+      await api(`/activities/${id}/dismiss`, "POST");
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   function updateJob(job: Job) {
     setJobs((current) => [{ ...job, result: undefined }, ...current.filter((row) => row.job_id !== job.job_id)].slice(0, 30));
   }
@@ -1725,7 +1740,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
       return (
         <>
           {revision && <TechnicalDeliveryPanel revision={revision} sources={project?.sources || []} requirements={project?.requirements || []} isClient={isClient} act={act} onRevisionCreated={setRevisionId} />}
-          <section className="card delivery-readiness" aria-label="PRD 缺項參考">
+          {revision && <section className="card delivery-readiness" aria-label="PRD 缺項參考">
             <div className="row"><div><span className="eyebrow">OPTIONAL REFERENCE</span><h2>PRD 缺項參考</h2></div>
               <label className="checkbox"><input type="checkbox" checked={showItReference} onChange={(event) => setShowItReference(event.target.checked)} /> 顯示 IT 交付參考清單</label></div>
             <p className="muted">這份清單只協助 PM 查看需求、驗收與技術資訊缺項，不是業務 PRD 定版的門檻。正式交付 IT 前仍須由相關角色審閱。</p>
@@ -1745,7 +1760,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 </details>;
               })}
             </div>}</>}
-          </section>
+          </section>}
           <div className="section-head">
             <div>
               <h2>PRD 預覽</h2>
@@ -1797,7 +1812,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               </button>
             )}
           </div>
-          {prdAdvice?.revision_hash === revision?.content_hash && <section className="card">
+          {prdAdvice?.result && revision && prdAdvice.revision_hash === revision.content_hash && <section className="card">
             <h3>AI 候選建議 · 不改寫已確認 PRD</h3>
             {prdAdvice.result.candidates?.map((item: any, i: number) => <div className="prd-row" key={i}>
               <h4>{item.title}</h4><p>{item.suggestion}</p>
@@ -1875,7 +1890,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
               })()}
             </article>
           ) : (
-            <div className="empty">完成需求審閱後，即可產生草稿。</div>
+            <div className="empty">
+              <p>還沒有 PRD 草稿。{project.state.change_analysis ? "審閱變更提案後即可產生。" : "先完成需求分析，再審閱提案。"}</p>
+              <div className="actions">
+                {project.state.change_analysis
+                  ? <button className="primary" onClick={() => setPage(6)}>前往提案審閱</button>
+                  : <button className="primary" onClick={() => setPage(5)}>前往變更分析</button>}
+              </div>
+            </div>
           )}
         </>
       );
@@ -2337,9 +2359,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
             </p>
           </div>
         )}
-        {jobs.filter((job) => ["QUEUED", "RUNNING"].includes(job.status)).concat(
-          jobs.filter((job) => !["QUEUED", "RUNNING"].includes(job.status)).slice(0, 2),
-        ).slice(0, 5).map((job) => <section className="execution-card" data-state={job.status} key={job.job_id} aria-label="背景工作狀態">
+        {jobs.filter((job) => noticeVisible(job.status === "COMPLETED" ? "SUCCEEDED" : job.status, job.finished_at, job.dismissed_at, Date.now()))
+          .slice(0, 5).map((job) => <section className="execution-card" data-state={job.status} key={job.job_id} aria-label="背景工作狀態">
+          {!["QUEUED", "RUNNING"].includes(job.status) && <button className="text-button notice-dismiss" aria-label="清除此工作通知" onClick={() => void dismissJob(job.job_id)}>知道了 ✕</button>}
           <strong>{({ AGENT: "Agent 流程", GUIDANCE: "AI 需求建議", RAG: "知識檢索", PRD: "PRD 生成" } as Record<string, string>)[job.kind] || job.kind} · {({ QUEUED: "排隊中", RUNNING: "執行中", COMPLETED: "已完成", FAILED: "失敗", CANCELLED: "已取消" } as Record<string, string>)[job.status]}</strong>
           {job.status === "QUEUED" && <p>已收到工作，正在等待可用資源。可離開頁面，稍後回來查看。</p>}
           {job.status === "RUNNING" && <p>{job.cancel_requested ? "正在取消，已完成的步驟可能需要收尾。" : `主機正在處理${job.progress ? ` · ${job.progress}%` : ""}，離開頁面不會停止。`}</p>}
@@ -2349,6 +2371,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
             {["FAILED", "CANCELLED"].includes(job.status) && <button disabled={busy} onClick={() => act(async () => { updateJob(await api<Job>(`/jobs/${job.job_id}/resume`, "POST")); })}>重新提交</button>}
             {job.status === "COMPLETED" && <button onClick={() => act(async () => {
               const detail = await api<Job>(`/jobs/${job.job_id}`);
+              void dismissJob(job.job_id);
               if (job.project_id) { setPid(job.project_id); setHomeOpen(false); }
               if (job.kind === "GUIDANCE") { setGuidance(detail.result); setCreateOpen(true); }
               if (job.kind === "RAG") { setResults(detail.result?.results || []); setSearchWarnings(detail.result?.warnings || []); setPage(2); }
@@ -2445,6 +2468,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
         )}
         <ActivityCards
           tasks={homeOpen ? globalTasks : project?.activities || []}
+          onDismiss={(id) => void dismissActivity(id)}
         />
         {enrichmentJobs
           .filter((j) =>

@@ -4,6 +4,7 @@ export type Job = {
   job_id: string; kind: string; project_id: string | null;
   status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
   progress: number; error: string; cancel_requested: number; created_at: string;
+  finished_at?: string | null; dismissed_at?: string | null;
   result?: any;
 };
 

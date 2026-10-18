@@ -1253,3 +1253,5 @@ summary {
 .text-button.danger-text { color: var(--error, #b42318); }
 
 .modify-panel { display: grid; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line, #ddd); }
+
+.notice-dismiss { float: right; font-size: 12px; }

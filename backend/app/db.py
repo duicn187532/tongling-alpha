@@ -85,6 +85,7 @@ class AppJob(Row, Base):
     started_at: Mapped[str | None] = mapped_column(String, nullable=True)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
     heartbeat_at: Mapped[str] = mapped_column(String, default=now)
+    dismissed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ResourceLease(Row, Base):
@@ -260,6 +261,7 @@ class Activity(Row, Base):
     heartbeat_at: Mapped[str] = mapped_column(String, default=now)
     updated_at: Mapped[str] = mapped_column(String, default=now)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    dismissed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Interruption(Row, Base):
