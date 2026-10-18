@@ -79,3 +79,15 @@ def test_baselined_revision_is_read_only(client, project, monkeypatch, tmp_path)
     assert client.put(f"/api/prd-revisions/{revision['id']}/sections/goals", json={"text": "x"}).status_code == 409
     with Session() as db:
         assert db.scalar(select(Project.current_revision_id).where(Project.id == project["id"])) == revision["id"]
+
+
+def test_ai_advice_can_be_adopted_into_sections(client, project):
+    revision = draft(client, project)
+    rid = revision["id"]
+    applied = client.post(f"/api/prd-revisions/{rid}/advice/apply",
+                          json={"kind": "acceptance_criteria", "text": "附件密碼錯誤三次後鎖定"})
+    assert applied.status_code == 200, applied.text
+    assert any(x["description"] == "附件密碼錯誤三次後鎖定" for x in applied.json()["content"]["acceptance_criteria"])
+    rules = client.post(f"/api/prd-revisions/{rid}/advice/apply", json={"kind": "business_rules", "text": "密碼不得與附件同封"})
+    assert [x["description"] for x in rules.json()["content"]["business_rules"]] == ["密碼不得與附件同封"]
+    assert client.post(f"/api/prd-revisions/{rid}/advice/apply", json={"kind": "隨意", "text": "x"}).status_code == 422

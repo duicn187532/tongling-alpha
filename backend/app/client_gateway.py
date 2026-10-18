@@ -245,6 +245,7 @@ PUBLIC_ROUTES = [
     ("PUT", r"/api/prd-revisions/[^/]+/diagrams/[0-9]+"),
     ("GET", r"/api/prd-revisions/[^/]+/gaps"),
     ("POST", r"/api/prd-revisions/[^/]+/gaps/[a-z_]+/answer"),
+    ("POST", r"/api/prd-revisions/[^/]+/advice/apply"),
     ("PUT", r"/api/prd-revisions/[^/]+/(sections/[a-z_]+|requirements/[^/]+)"),
     ("POST", r"/api/agent/guidance"),
 ]

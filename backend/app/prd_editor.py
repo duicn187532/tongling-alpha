@@ -42,6 +42,11 @@ class RequirementEditInput(BaseModel):
     actor: str | None = Field(default=None, max_length=120)
 
 
+class AdviceInput(BaseModel):
+    kind: str = Field(min_length=1, max_length=40)
+    text: str = Field(min_length=1, max_length=2000)
+
+
 class SectionItems(BaseModel):
     items: list[str] = Field(min_length=1, max_length=12)
 
@@ -75,7 +80,11 @@ def gaps(content):
 def apply_edits(content, edits):
     """Replay the PM's saved section edits onto freshly built draft content."""
     for field, value in (edits or {}).items():
-        if field in TEXT_FIELDS:
+        if field == "acceptance_extra":
+            have = {x.get("description") for x in content.get("acceptance_criteria", []) if isinstance(x, dict)}
+            content["acceptance_criteria"] = content.get("acceptance_criteria", []) + [
+                {"description": text, "status": "TO_CONFIRM", "origin": "PM"} for text in value if text not in have]
+        elif field in TEXT_FIELDS:
             content[field] = value
         elif field in GAP_FIELDS:
             content[field] = _pm_items(value, field)
@@ -167,6 +176,34 @@ def register(app, get_db, get):
         content[field] = _pm_items(value, field)
         _save(db, revision, project, content, field, value, f"PM 補齊 PRD：{title}")
         return {"items": items, "revision": projected(revision, db)}
+
+    @app.post("/api/prd-revisions/{rid}/advice/apply")
+    def apply_advice(rid: str, body: AdviceInput, db=Depends(get_db)):
+        """Adopt one AI review suggestion into the matching PRD section."""
+        if body.kind != "acceptance_criteria" and body.kind not in GAP_FIELDS:
+            raise HTTPException(422, "這項建議沒有對應的 PRD 章節，請手動編修")
+        revision, project = _draft(db, get, rid)
+        content = dict(revision.content)
+        text = body.text.strip()
+        edits = project.state.get("prd_edits") or {}
+        if body.kind == "acceptance_criteria":
+            field = "acceptance_extra"
+            value = list(edits.get(field) or [])
+            if text not in value:
+                value.append(text)
+            content = apply_edits(content, {field: [text]})
+            title = "驗收條件"
+        else:
+            field = body.kind
+            current = [x.get("description") or x.get("statement") if isinstance(x, dict) else str(x)
+                       for x in content.get(field) or []]
+            value = list(edits.get(field) or current)
+            if text not in value:
+                value.append(text)
+            content[field] = _pm_items(value, field)
+            title = GAP_FIELDS[field][0]
+        _save(db, revision, project, content, field, value, f"採用 AI 建議：{title}")
+        return projected(revision, db)
 
     @app.put("/api/prd-revisions/{rid}/requirements/{req_id}")
     def edit_requirement(rid: str, req_id: str, body: RequirementEditInput, db=Depends(get_db)):

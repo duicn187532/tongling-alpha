@@ -1080,11 +1080,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
   useEffect(() => {
     if (!revision?.id) { setPrdAdvice(null); return; }
     let live = true;
-    api<any>(`/prd-revisions/${revision.id}/assist/prd`)
-      .then((result) => { if (live) setPrdAdvice(result); })
+    const id = revision.id;
+    api<any>(`/prd-revisions/${id}/assist/prd`)
+      .then((result) => { if (live) setPrdAdvice(result ? { ...result, revision_id: id } : null); })
       .catch(() => { if (live) setPrdAdvice(null); });
     return () => { live = false; };
-  }, [revision?.id, revision?.content_hash]);
+    // Keyed to the draft, not its hash: adopting a suggestion edits the draft.
+  }, [revision?.id]);
   useEffect(() => {
     if (page !== 7 || !revision?.id || !showItReference) { setDeliveryCheck(null); return; }
     let live = true;
@@ -1148,8 +1150,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     <>
       <div className="section-head">
         <div>
-          <h2>把依據放在同一個地方</h2>
-          <p>所有來源都會解析成可追溯的證據，不會直接成為已核准需求。</p>
+          <h2>本案依據</h2>
         </div>
       </div>
       <div className="card">
@@ -1316,7 +1317,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     if (which === 2)
       return (
         <>
-          <h2>尋找可採用的依據</h2>
+          <h2>搜尋共用知識</h2>
           <details className="knowledge-drawer">
             <summary>標籤、圖譜與同業研究</summary>
             <KnowledgePanel pid={pid} config={config} act={act} isClient={isClient} />
@@ -1372,9 +1373,6 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 }}
               />
             </label>}
-            <small>
-              自動檢索不會自動核准來源；Agent 模式會在分析前挑選相關依據。
-            </small>
           </div>
           {searchProjectId === pid && searchWarnings.map((warning, i) => <p key={i} role="status" className="feedback warning">{warning}</p>)}
           {searchProjectId === pid && searchSummary && <p role="status" className={`feedback ${results.length ? "success" : "warning"}`}>{searchSummary}</p>}
@@ -1847,7 +1845,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <div className="actions">
                   <button onClick={() => act(async () => {
                     setNotice("正在產生 PRD 候選建議，請稍候…");
-                    setPrdAdvice(await api(`/prd-revisions/${revision.id}/assist/prd`, "POST", undefined, 200000));
+                    setPrdAdvice({ ...(await api(`/prd-revisions/${revision.id}/assist/prd`, "POST", undefined, 200000)), revision_id: revision.id });
                     setNotice("PRD 建議已產生，請核對來源及待確認項目。");
                   })}>AI 檢查 PRD 與驗收缺漏</button>
                   <button
@@ -1892,10 +1890,15 @@ function App({ isClient = false }: { isClient?: boolean }) {
             )}
           </div>
           {revision && revision.id === project.state.draft_id && <GapPanel revision={revision} onChange={() => void refresh()} />}
-          {prdAdvice?.result && revision && prdAdvice.revision_hash === revision.content_hash && <section className="card">
-            <h3>AI 候選建議 · 不改寫已確認 PRD</h3>
+          {prdAdvice?.result && revision && prdAdvice.revision_id === revision.id && <section className="card">
+            <h3>AI 建議 · 採用後才會寫入草稿</h3>
             {prdAdvice.result.candidates?.map((item: any, i: number) => <div className="prd-row" key={i}>
               <h4>{item.title}</h4><p>{item.suggestion}</p>
+              {revision.status === "IN_REVIEW" && <button disabled={busy || item.applied} onClick={() => act(async () => {
+                await api(`/prd-revisions/${revision.id}/advice/apply`, "POST", { kind: item.kind, text: item.suggestion });
+                item.applied = true;
+                setNotice(`已採用：${item.title}`);
+              })}>{item.applied ? "✓ 已採用" : "採用到 PRD"}</button>}
               <small>來源：{item.source_refs?.length
                 ? item.source_refs.map((id: string) => <span key={id}>{sourceButton(id)} </span>)
                 : "尚缺"} · 待確認：{item.uncertainty || "無"}</small>
@@ -2472,7 +2475,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 </button>
               </div>
               <div className="composer-foot">
-                <small>證據保存於本機 · 正式版本需經你確認</small>
+                <small />
                 <button
                   className="primary"
                   disabled={busy || project.runtime === "RUNNING"}
@@ -2827,41 +2830,25 @@ function App({ isClient = false }: { isClient?: boolean }) {
           <nav className="settings-page-nav" aria-label="設定分類">
             <div className="settings-tabs"><button className={settingsTab === "appearance" ? "active" : ""} onClick={() => setSettingsTab("appearance")}>外觀與主題</button></div>
             {!isClient && <>
-            <div className="settings-tabs">
-              <button
-                className={settingsTab === "model" ? "active" : ""}
-                onClick={() => setSettingsTab("model")}
-              >
-                模型連線
-              </button>
-              <button
-                className={settingsTab === "files" ? "active" : ""}
-                onClick={() => setSettingsTab("files")}
-              >
-                資料夾與範例
-              </button>
-            </div>
-            <div className="settings-tabs v7-tabs">
-              {[
-                ["output", "PRD 模板"],
-                ["organization", "組織與行業"],
-                ["retrieval", "檢索設定"],
-                ["knowledge", "知識來源"],
-                ["knowledge_manager", "知識庫管理"],
-                ["routing", "模型路由"],
-                ["queue", "展示併發"],
-                ["projects", "專案管理"],
-                ["access", "伺服器／客戶端連線"],
-              ].map(([key, title]) => (
-                <button
-                  key={key}
-                  className={settingsTab === key ? "active" : ""}
-                  onClick={() => setSettingsTab(key)}
-                >
-                  {title}
-                </button>
-              ))}
-            </div>
+            {[
+              ["常用", [["model", "模型連線"], ["knowledge", "知識來源"], ["knowledge_manager", "知識庫管理"],
+                        ["output", "PRD 模板"], ["projects", "專案管理"], ["access", "伺服器／客戶端連線"]]],
+              ["進階", [["organization", "組織與行業"], ["files", "資料夾與範例"], ["retrieval", "檢索設定"],
+                        ["routing", "模型路由"], ["queue", "展示併發"]]],
+            ].map(([group, tabs]) => (
+              <div className="settings-tabs v7-tabs" key={group as string}>
+                <small className="settings-group">{group as string}</small>
+                {(tabs as string[][]).map(([key, title]) => (
+                  <button
+                    key={key}
+                    className={settingsTab === key ? "active" : ""}
+                    onClick={() => setSettingsTab(key)}
+                  >
+                    {title}
+                  </button>
+                ))}
+              </div>
+            ))}
             </>}
           </nav>
           <section className="settings-page-content" aria-label="設定內容">
