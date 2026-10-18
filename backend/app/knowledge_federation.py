@@ -285,8 +285,12 @@ def agent_search(db, project, text, config, local_search, provider_factory=None)
     order = {"KEY": 0, "SUPPORTING": 1, "CONTEXT": 2, "EXTERNAL_BENCHMARK": 3, "REJECTED": 4}
     best = {}
     for local_query, remote_query in passes:
-        for hit in retrieve(db, local_query, project.id, config, local_search,
-                            provider_factory=provider_factory, remote_query=remote_query):
+        found = retrieve(db, local_query, project.id, config, local_search,
+                         provider_factory=provider_factory, remote_query=remote_query)
+        # Release SQLite's write lock (audit rows) before the next slow
+        # embedding or HTTP pass; other workers' heartbeats wait on it.
+        db.commit()
+        for hit in found:
             current = best.get(hit["source_id"])
             if current is None or (order.get(hit["evidence_role"], 3), -hit.get("case_relevance_score", 0)) < (
                     order.get(current["evidence_role"], 3), -current.get("case_relevance_score", 0)):

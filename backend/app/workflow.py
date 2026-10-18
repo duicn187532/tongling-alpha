@@ -216,6 +216,7 @@ def _execute(project_id, run_id, epoch):
                         if source.id not in ids and source.id not in added:
                             added.append(source.id)
                             imported.append(source.id)
+                        db.commit()  # do not hold the write lock across the next fetch
                         continue
                     if hit["source_id"] not in ids and hit["source_id"] not in added:
                         db.add(Link(project_id=project_id, source_id=hit["source_id"]))
@@ -428,7 +429,7 @@ def _execute(project_id, run_id, epoch):
                 report = project.state["change_analysis"]
                 interruption(
                     db, project, "REQUIREMENT_REVIEW", "AI 需求變更提案待整體審閱",
-                    f"已整理 {len(report.get('proposals', []))} 項變更；其中 {len(report.get('critical_questions', []))} 項重要問題需先決策。",
+                    f"有 {sum(1 for item in report.get('proposals', []) if item.get('needs_review', True))} 項變更需要你審閱；其中 {len(report.get('critical_questions', []))} 項須明確決策，其餘可一次接受。",
                 )
                 project.runtime = "WAITING_HUMAN"
             elif any(

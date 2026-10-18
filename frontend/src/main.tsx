@@ -978,9 +978,10 @@ function App({ isClient = false }: { isClient?: boolean }) {
     };
   }, [pid]);
   useEffect(() => {
+    // Do not cover settings or the overview; the project shows the same item inline.
     const next = project?.interruptions?.find((i: any) => i.status === "OPEN");
-    setInterrupt(next || null);
-  }, [project?.interruptions?.map((i: any) => i.id + i.status).join(",")]);
+    setInterrupt(next && !settingsOpen && !homeOpen ? next : null);
+  }, [project?.interruptions?.map((i: any) => i.id + i.status).join(","), settingsOpen, homeOpen]);
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(""), 5000);
@@ -2261,6 +2262,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       ? "加入新會議或證據，我會整理變更影響，再由你決定是否修訂。"
                       : project.runtime === "RUNNING"
                         ? "需求起點已保存。我正在檢索可用來源並分析；遇到缺乏證據或需要決策的項目會停下來請你確認。"
+                        : project.state.change_analysis
+                          ? "我已比對需求與依據，整理成變更提案。下面是我查到的依據與你接下來要做的事。"
                         : project.sources.length > 0
                           ? "需求起點已保存。按「繼續處理」，彤靈會先查找可用來源，再整理待確認事項；你無須先準備附件。"
                           : "先描述需求起點，彤靈會查找可用來源；文件與會議可在需要時補充。"}

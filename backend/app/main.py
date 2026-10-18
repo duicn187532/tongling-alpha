@@ -1474,8 +1474,9 @@ def rewrite_requirement(rid: str, body: RewriteInput, db=Depends(get_db)):
     try:
         result = structured(
             config, "CHANGE_PROPOSAL",
-            "你是金融業資深 PM。依 PM 的修改說明改寫一條正式、可驗證的繁體中文需求。"
-            "保留原需求中未被修改的內容，不得新增說明以外的系統、欄位、核准或數值。只回傳 statement。",
+            "你是金融業資深 PM。依 PM 的修改說明重寫一條正式、可驗證的繁體中文需求。"
+            "PM 說明優先：原需求中與說明矛盾的文字必須刪除或改寫，不可並列保留；"
+            "其餘未被修改的內容保留。不得新增說明以外的系統、欄位、核准或數值。只回傳 statement。",
             {"topic": r.topic, "current_requirement": base, "pm_change_note": body.note,
              "evidence": [f.get("statement", "")[:400] for f in r.evidence[:6]]},
             RewrittenRequirement, lambda: fallback, timeout_seconds=90, max_tokens=800)

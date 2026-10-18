@@ -296,16 +296,25 @@ def create_draft(db, project):
         proposals = [p for p in report.get("proposals", []) if p["requirement_id"] in chosen]
         content["change_analysis"] = {"goal": report.get("goal"), "summary": report.get("summary"),
                                       "proposals": proposals, "review": (project.state or {}).get("change_review", {})}
-        content["current_state"] = [{"requirement_id": p["requirement_id"], "description": p["current_state"],
-                                     "source_refs": [r["source_id"] for r in p["evidence_uncertainty"]["references"]
-                                                     if r.get("source_id")]} for p in proposals]
+        # Background rules describe the current state; only real changes form
+        # the change scope, acceptance criteria and open questions.
+        delta = [p for p in proposals if p["status"] not in {"CONTEXT", "ALREADY_SUPPORTED"}]
+        seen_state = set()
+        content["current_state"] = []
+        for p in proposals:
+            if p["current_state"].startswith("現況缺少") or p["current_state"] in seen_state:
+                continue
+            seen_state.add(p["current_state"])
+            content["current_state"].append({"requirement_id": p["requirement_id"], "description": p["current_state"],
+                                             "source_refs": [r["source_id"] for r in p["evidence_uncertainty"]["references"]
+                                                             if r.get("source_id")]})
         content["change_scope"] = [{"requirement_id": p["requirement_id"], "action": p["status"],
-                                    "before": p["current_state"], "after": p["target_state"]} for p in proposals]
+                                    "before": p["current_state"], "after": p["target_state"]} for p in delta]
         content["acceptance_criteria"] = [{"requirement_id": p["requirement_id"], "description": criterion,
                                            "status": "TO_CONFIRM"}
-                                          for p in proposals for criterion in p["proposed_requirement"]["acceptance_criteria"]]
-        content["open_issues"] += [{"requirement_id": p["requirement_id"], "statement": issue}
-                                   for p in proposals for issue in p["evidence_uncertainty"]["open_questions"]]
+                                          for p in delta for criterion in p["proposed_requirement"]["acceptance_criteria"]]
+        content["open_issues"] += [{"statement": issue}
+                                   for issue in dict.fromkeys(i for p in delta for i in p["evidence_uncertainty"]["open_questions"])]
     if not parent:
         content["diagrams"] = diagram_sources(requirements)
         technical = [
@@ -424,6 +433,10 @@ def create_draft(db, project):
         changes=[c.id for c in changes],
         status="IN_REVIEW",
     )
+    # A newer draft replaces earlier unapproved drafts; only one stays in review.
+    for stale in all_revisions:
+        if stale.status in {"DRAFT", "IN_REVIEW"}:
+            stale.status = "SUPERSEDED"
     db.add(row)
     db.flush()
     project.state = {
