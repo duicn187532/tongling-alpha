@@ -35,17 +35,21 @@ function loadMermaid() {
   });
   return mermaidModule;
 }
-const steps = [
-  "需求說明",
-  "知識檢索",
-  "補充資料",
-  "會議助理",
-  "變更分析",
-  "提案審閱",
-  "IT 交付",
-  "預覽 PRD",
-  "版本與下載",
+// Four stages a PM moves through; meetings and IT delivery are side tabs.
+const STAGES = [
+  { label: "需求與依據", pages: [1, 2, 3] },
+  { label: "審閱提案", pages: [5, 6] },
+  { label: "PRD", pages: [8] },
+  { label: "版本", pages: [9] },
 ];
+const EXTRAS = [
+  { label: "會議", page: 4 },
+  { label: "IT 交付", page: 7 },
+];
+function placeName(page: number) {
+  return STAGES.find((stage) => stage.pages.includes(page))?.label ||
+    EXTRAS.find((extra) => extra.page === page)?.label || "";
+}
 const statusLabels: Record<string, string> = {
   READY: "準備就緒",
   RUNNING: "彤靈處理中",
@@ -706,7 +710,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     return () => window.clearInterval(timer);
   }, [guidanceBusy]);
   const [delegated, setDelegated] = useState(false);
-  const [startOnCreate, setStartOnCreate] = useState(false);
+  const [startOnCreate, setStartOnCreate] = useState(true);
   const [initialMode, setInitialMode] = useState<"AGENT" | "MANUAL">("AGENT");
   const [composer, setComposer] = useState(""),
     [showActivity, setShowActivity] = useState(false),
@@ -994,11 +998,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
       document.removeEventListener("visibilitychange", visibleAgain);
     };
   }, [pid]);
-  useEffect(() => {
-    // Do not cover settings or the overview; the project shows the same item inline.
-    const next = project?.interruptions?.find((i: any) => i.status === "OPEN");
-    setInterrupt(next && !settingsOpen && !homeOpen ? next : null);
-  }, [project?.interruptions?.map((i: any) => i.id + i.status).join(","), settingsOpen, homeOpen]);
+  // Pending items show inline (next-step bar, Agent card); the dialog opens only on request.
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(""), 5000);
@@ -1252,8 +1252,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
     </>
   );
 
-  function renderPage() {
-    if (page === 1)
+  function renderSingle(which: number) {
+    if (which === 1)
       return (
         <>
           <h2>從一個清楚的需求開始</h2>
@@ -1289,12 +1289,12 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <button onClick={() => uploadRef.current?.click()}>
                 上傳需求文件
               </button>
-              <button onClick={() => setPage(2)}>下一步：知識檢索 →</button>
+
             </div>
           </div>
         </>
       );
-    if (page === 2)
+    if (which === 2)
       return (
         <>
           <h2>尋找可採用的依據</h2>
@@ -1430,8 +1430,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 3) return sourcesView;
-    if (page === 4)
+    if (which === 3) return sourcesView;
+    if (which === 4)
       return (
         <>
           <h2>每一場會議，都保留脈絡</h2>
@@ -1535,7 +1535,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 5)
+    if (which === 5)
       return (
         <>
           <div className="section-head">
@@ -1635,7 +1635,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </details>
         </>
       );
-    if (page === 6 && project.state.change_analysis) {
+    if (which === 6 && project.state.change_analysis) {
       const report = project.state.change_analysis;
       const reviewed = project.state.change_review?.status === "APPROVED" && project.state.change_review?.fingerprint === report.fingerprint;
       const toReview = report.proposals.filter((item: any) => item.needs_review ?? true);
@@ -1654,15 +1654,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
           <strong>{toReview.length} 項需審閱 · 尚未處理 {open.length} 項{unresolved.length ? ` · ${unresolved.length} 項須先決策` : ""}</strong>
           <p>{reviewed ? "✓ 整體提案已審閱，可產生 PRD 草稿。" : unresolved.length
             ? "請先處理標示「須決策」的項目，其餘可一次接受。"
-            : "按「接受整體提案」：未逐項處理的提案依 AI 建議納入，現行規範列為背景，資訊不足者列為待決事項。"}</p>
+            : "按下後：未逐項處理的提案依 AI 建議納入，現行規範列為背景，資訊不足者列為待決事項，並直接產生 PRD 草稿。"}</p>
           <div className="actions">
             <button className="primary" disabled={busy || !!blockedReason || !!unresolved.length || reviewed}
-              onClick={() => act(() => api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint}), "已接受整體提案")}>
-              接受整體提案並納入草稿
+              onClick={() => act(async () => {
+                await api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint});
+                await queueAndWait("PRD", { project_id: pid });
+                setPage(8);
+              }, "已接受提案並產生 PRD 草稿")}>
+              接受提案並產生 PRD 草稿
             </button>
-            <button className={reviewed ? "primary" : ""} disabled={busy || !reviewed || !!unresolved.length} onClick={() => act(async () => {
+            {reviewed && <button className="primary" disabled={busy || !!unresolved.length} onClick={() => act(async () => {
               await queueAndWait("PRD", { project_id: pid }); setPage(8);
-            })}>產生待審閱 PRD</button>
+            })}>{project.state.draft_id ? "開啟 PRD 草稿" : "重新產生 PRD 草稿"}</button>}
           </div>
         </div>
         {toReview.length === 0 && <p className="feedback success">沒有需要你判斷的變更；可直接接受整體提案。</p>}
@@ -1682,7 +1686,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
         </details>}
       </>;
     }
-    if (page === 6)
+    if (which === 6)
       return (
         <>
           <h2>讓每個決策有依據</h2>
@@ -1772,7 +1776,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 7)
+    if (which === 7)
       return (
         <>
           <h2>IT 交付</h2>
@@ -1814,7 +1818,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           )}
         </>
       );
-    if (page === 8)
+    if (which === 8)
       return (
         <>
           <div className="section-head">
@@ -2052,6 +2056,22 @@ function App({ isClient = false }: { isClient?: boolean }) {
       </>
     );
   }
+  function renderPage() {
+    if ([1, 2, 3].includes(page))
+      return <>{renderSingle(1)}{renderSingle(3)}{renderSingle(2)}</>;
+    if ([5, 6].includes(page)) {
+      if (!project.state.change_analysis) return renderSingle(5);
+      return <>
+        {renderSingle(6)}
+        <details className="card analysis-details">
+          <summary>分析細節：來源比對與證據（需要時再看）</summary>
+          {renderSingle(5)}
+        </details>
+      </>;
+    }
+    return renderSingle(page);
+  }
+
 
   return (
     <div className={`app${settingsOpen ? " settings-active" : ""}${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}${mobileLeftOpen ? " mobile-left-open" : ""}${mobileRightOpen ? " mobile-right-open" : ""}`} onClickCapture={clickFeedback}>
@@ -2183,17 +2203,27 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <span className="eyebrow">下一步</span><span>{nextStep.text}</span>
               {nextStep.action === "analyze" && project.runtime !== "RUNNING"
                 ? <button className="primary" disabled={busy} onClick={() => act(() => api(`/projects/${pid}/analysis/run`, "POST"), "已開始分析")}>執行分析</button>
-                : nextStep.step > 0 && page !== nextStep.step && <button className="primary" onClick={() => setPage(nextStep.step)}>前往「{steps[nextStep.step - 1]}」</button>}
+                : nextStep.step > 0 && placeName(page) !== placeName(nextStep.step) && <button className="primary" onClick={() => setPage(nextStep.step)}>前往「{placeName(nextStep.step)}」</button>}
             </div>}
             <div className="steps">
-              {steps.map((s, i) => (
+              {STAGES.map((stage, i) => (
                 <button
-                  className={page === i + 1 ? "active" : ""}
-                  key={s}
-                  onClick={() => setPage(i + 1)}
+                  className={stage.pages.includes(page) ? "active" : ""}
+                  key={stage.label}
+                  onClick={() => setPage(stage.pages[0])}
                 >
                   <span>{i + 1}</span>
-                  {s}
+                  {stage.label}
+                </button>
+              ))}
+              <span className="steps-divider" aria-hidden="true" />
+              {EXTRAS.map((extra) => (
+                <button
+                  className={`step-extra ${page === extra.page ? "active" : ""}`}
+                  key={extra.label}
+                  onClick={() => setPage(extra.page)}
+                >
+                  {extra.label}
                 </button>
               ))}
             </div>
@@ -2244,7 +2274,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <strong>{label(project.runtime)}</strong>
               <span className="muted">
                 {project.state.step
-                  ? `第 ${project.state.step} 步 · ${steps[project.state.step - 1]}`
+                  ? `目前階段 · ${placeName(project.state.step)}`
                   : "等待需求"}
               </span>
               <button
@@ -2260,20 +2290,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <div style={{ width: (project.state.progress || 0) + "%" }} />
             </div>
             <div className="task-chips">
-              {[
-                "理解需求",
-                "蒐集依據",
-                "分析與收斂",
-                "人類協作",
-                "產出 PRD",
-              ].map((s, i) => (
+              {STAGES.map((stage, i) => (
                 <button
                   type="button"
-                  className={`task-chip ${(project.state.step || 1) > i * 2 ? "done" : ""}`}
-                  key={s}
-                  onClick={() => openStep([1, 2, 5, 6, 8][i])}
+                  className={`task-chip ${STAGES.findIndex((x) => x.pages.includes(project.state.step || 1)) >= i ? "done" : ""}`}
+                  key={stage.label}
+                  onClick={() => openStep(stage.pages[0])}
                 >
-                  {s}
+                  {stage.label}
                 </button>
               ))}
             </div>
@@ -2349,7 +2373,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   <p>{nextStep.text}</p>
                   {nextStep.action === "analyze"
                     ? <button className="primary" disabled={busy} onClick={() => act(continueRun)}>開始分析 →</button>
-                    : nextStep.step > 1 && <button className="primary" onClick={() => openStep(nextStep.step)}>前往「{steps[nextStep.step - 1]}」→</button>}
+                    : nextStep.step > 1 && <button className="primary" onClick={() => openStep(nextStep.step)}>前往「{placeName(nextStep.step)}」→</button>}
                 </div>
               )}
               {project.interruptions.length > 0 && (
@@ -2536,24 +2560,6 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   {project.runtime === "ERROR" ? "重試工作" : "繼續處理"}
                 </button>
               )}
-              {project.runtime !== "RUNNING" &&
-                !project.state.analysis_stale &&
-                project.requirements.length > 0 && (
-                  <button
-                    onClick={() =>
-                      openStep(
-                        project.changes.some((c: any) => c.status === "OPEN")
-                          ? 9
-                          : 6,
-                      )
-                    }
-                  >
-                    前往下一步：
-                    {project.changes.some((c: any) => c.status === "OPEN")
-                      ? "變更審查"
-                      : "提案審閱"}
-                  </button>
-                )}
             </div>
           </section>
         )}
@@ -2628,16 +2634,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <p>建議釐清：{guidance.questions?.join("；")}</p>
                 <button onClick={() => setBrief(guidance.refined_brief)}>套用建議需求</button>
               </div>}
-              <label>工作方式
-                <select value={initialMode} onChange={(e) => setInitialMode(e.target.value as "AGENT" | "MANUAL")}>
-                  <option value="AGENT">Agent 引導</option><option value="MANUAL">手動流程</option>
-                </select>
-              </label>
-              {initialMode === "AGENT" && <>
-                <label className="checkbox"><input type="checkbox" checked={delegated} onChange={(e) => setDelegated(e.target.checked)} />授權 Agent 代理明確且無衝突的需求決策</label>
-                <label className="checkbox"><input type="checkbox" checked={startOnCreate} onChange={(e) => setStartOnCreate(e.target.checked)} />建立後立即開始分析</label>
-                <small>開放議題、衝突和正式 PRD 定版仍由你確認。</small>
-              </>}
+              <p className="muted">建立後彤靈會自動查找依據並分析需求，需要你決定時會停下來。</p>
+              <details className="create-advanced">
+                <summary>進階選項</summary>
+                <label>工作方式
+                  <select value={initialMode} onChange={(e) => setInitialMode(e.target.value as "AGENT" | "MANUAL")}>
+                    <option value="AGENT">Agent 引導（建議）</option><option value="MANUAL">手動流程</option>
+                  </select>
+                </label>
+                {initialMode === "AGENT" && <>
+                  <label className="checkbox"><input type="checkbox" checked={startOnCreate} onChange={(e) => setStartOnCreate(e.target.checked)} />建立後立即開始分析</label>
+                  <label className="checkbox"><input type="checkbox" checked={delegated} onChange={(e) => setDelegated(e.target.checked)} />讓 Agent 先處理明確且無衝突的需求（衝突與定版仍由你確認）</label>
+                </>}
+              </details>
             </div>
             <div className="actions">
               <button
@@ -2663,7 +2672,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                     setBrief("");
                     setGuidance(null);
                     setDelegated(false);
-                    setStartOnCreate(false);
+                    setStartOnCreate(true);
                   })
                 }
               >

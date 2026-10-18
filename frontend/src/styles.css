@@ -1270,3 +1270,8 @@ summary {
 .gap-item { display: grid; gap: 6px; margin: 10px 0; }
 .gap-item textarea { width: 100%; }
 .gap-item ul { margin: 4px 0 0 18px; }
+
+.steps .steps-divider { width: 1px; align-self: stretch; margin: 4px 6px; background: var(--line, #ddd); }
+.steps .step-extra { opacity: 0.85; font-size: 0.92em; }
+.create-advanced { margin-top: 8px; }
+.create-advanced[open] { display: grid; gap: 8px; }
