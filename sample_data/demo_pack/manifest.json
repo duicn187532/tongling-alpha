@@ -1,0 +1,16 @@
+{
+  "id": "tongling-bank-demo-v1",
+  "title": "手機預借現金需求整合",
+  "description_file": "docs/01_requirement.md",
+  "sources": [
+    {"path": "docs/01_requirement.md", "kind": "REQUIREMENT_DOCUMENT", "owner": "產品企劃"},
+    {"path": "docs/02_policy.md", "kind": "INTERNAL_POLICY", "owner": "風控與法遵"},
+    {"path": "docs/03_sa.md", "kind": "TECH_SPEC", "owner": "資訊系統分析"}
+  ],
+  "meetings": [
+    {"title": "需求起點討論", "meeting_date": "2026-10-01", "participants": ["產品企劃", "業務"], "path": "meetings/01_initial.vtt"},
+    {"title": "風控與系統限制確認", "meeting_date": "2026-10-08", "participants": ["產品企劃", "風控", "系統分析"], "path": "meetings/02_risk.vtt"},
+    {"title": "第一階段範圍決策", "meeting_date": "2026-10-15", "participants": ["產品企劃", "業務", "系統分析"], "path": "meetings/03_decisions.vtt"}
+  ],
+  "revision_meeting": {"title": "正式版本後限額變更", "meeting_date": "2026-10-22", "participants": ["產品企劃", "風控"], "path": "revision/04_limit_change.vtt"}
+}
