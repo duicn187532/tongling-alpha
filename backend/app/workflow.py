@@ -1,13 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
+import re
 from sqlalchemy import select, text
 from .db import Session, Project, Link, Run, Change, Requirement, Source, log, now
 from .intelligence import settings, extract_sources, apply_analysis
 from .retrieval import retrieve
 from .lifecycle import create_draft, interruption, resolve_interruptions
 from . import activity
-
-pool = ThreadPoolExecutor(max_workers=2)
-
 
 def auto_decide_safe(db, project):
     """Delegation accepts only clear, sourced candidates; never baselines a PRD."""
@@ -17,10 +14,14 @@ def auto_decide_safe(db, project):
     import re
 
     accepted = []
+    proposals = {item["requirement_id"]: item for item in
+                       (project.state.get("change_analysis") or {}).get("proposals", [])}
     for row in db.scalars(select(Requirement).where(Requirement.project_id == project.id)):
         if row.decision.get("action") in {"ACCEPT", "MODIFY", "REJECT"}:
             continue
         if row.status != "CONFIRMED_CANDIDATE" or not row.evidence:
+            continue
+        if proposals and proposals.get(row.id, {}).get("status") not in {"ADD", "ALREADY_SUPPORTED"}:
             continue
         if re.search(r"待確認|待決|尚未|未定|可能|視情況|或許|TBD|[?？]", row.statement, re.I):
             continue
@@ -31,7 +32,7 @@ def auto_decide_safe(db, project):
             continue
         if any(fact.get("kind") in {"OPEN_ITEM", "QUESTION", "EXCLUDED"} for fact in row.evidence):
             continue
-        row.decision = {"action": "ACCEPT", "statement": row.statement,
+        row.decision = {"action": "ACCEPT", "statement": proposals.get(row.id, {}).get("proposed_requirement", {}).get("statement") or row.statement,
                         "rationale": "使用者授權 Agent 代理；本項來源一致、沒有標示衝突或待確認。正式 PRD 仍需審閱。",
                         "decided_at": now(), "decided_by": "AGENT_DELEGATED"}
         project_lifecycle.memory_for_decision(db, row)
@@ -54,6 +55,7 @@ def plan(project):
 
 
 def launch(db, project, force_analysis=False):
+    from . import job_queue
     if project.status != "ACTIVE":
         raise ValueError("專案已刪除")
     active = db.scalar(
@@ -100,9 +102,12 @@ def launch(db, project, force_analysis=False):
         project.id,
         run.id,
     )
+    job = job_queue.submit(db, "AGENT", project=project,
+                           payload={"run_id": run.id, "epoch": project.epoch},
+                           idempotency_key=f"agent:{run.id}")
+    run.checkpoint = {**run.checkpoint, "job_id": job.id}
     log(db, project.id, "RUN", "從已保存的檢查點繼續", run.checkpoint)
     db.commit()
-    pool.submit(execute, project.id, run.id, project.epoch)
     return run
 
 
@@ -179,7 +184,8 @@ def _execute(project_id, run_id, epoch):
                 # Retrieval precedes intelligence and attaches actual library evidence, never sample facts.
                 activity.stage("檢索共用知識庫")
                 hits = retrieve(
-                    db, project.description or project.name, project.id, config
+                    db, project.description or project.name, project.id,
+                    {**config, "_skip_graph_reasoning": True},
                 )
                 added = []
                 remote_references = []
@@ -240,7 +246,7 @@ def _execute(project_id, run_id, epoch):
                     db,
                     project.description or project.name,
                     project.id,
-                    {**config, "top_k": max(1, len(ids))},
+                    {**config, "top_k": max(1, len(ids)), "_skip_graph_reasoning": True},
                     "hybrid_reranker",
                     set(ids),
                 )
@@ -282,6 +288,35 @@ def _execute(project_id, run_id, epoch):
                 extract_sources(db, project, dirty or ids, config) if stale else {}
             )
             extracted.update({sid: [] for sid in rejected})
+            if stale and not project.current_revision_id and re.search(
+                r"API|電文|資料表|資料庫|介面|系統架構|程式碼|欄位",
+                project.description + " ".join(f.get("statement", "") for facts in extracted.values() for f in facts),
+                re.I,
+            ):
+                activity.stage("檢索技術知識", "查找可引用的 SA／系統規格，缺少證據時保留待確認")
+                try:
+                    technical_hits = retrieve(
+                        db, project.description + " 系統 API 電文 資料表 技術規格", project.id,
+                        {**config, "top_k": 5, "_skip_graph_reasoning": True}, "hybrid_reranker",
+                    )
+                    technical_ids = list(dict.fromkeys(
+                        hit["source_id"] for hit in technical_hits
+                        if hit.get("source_location") != "REMOTE"
+                        and hit.get("evidence_role") in {"KEY", "SUPPORTING"}
+                        and hit.get("source_id") not in ids
+                        and (source := db.get(Source, hit.get("source_id"))) is not None
+                        and source.kind == "TECH_SPEC" and source.status == "ACTIVE"
+                    ))
+                    if technical_ids:
+                        technical_facts = extract_sources(db, project, technical_ids, config)
+                        for source_id in technical_ids:
+                            db.add(Link(project_id=project_id, source_id=source_id))
+                        extracted.update(technical_facts)
+                        project.state = {**project.state, "technical_retrieval_source_ids": technical_ids}
+                        db.commit()
+                except Exception as exc:
+                    project.state = {**project.state, "technical_retrieval_error": str(exc)[:300]}
+                    db.commit()
         activity.stage(
             "整理分析結果與下一步", "模型輸出已取得，正在核對證據與人工審查條件"
         )
@@ -315,6 +350,14 @@ def _execute(project_id, run_id, epoch):
                     )
                 )
             )
+            if project.current_revision_id and project.state.get("change_analysis_unchanged"):
+                for change in changes:
+                    change.status = "NO_PRD_CHANGE"
+                    change.resolution = {"reason": "新增來源未改變需求語意或關鍵風險；保留既有決策與已定版 PRD",
+                                         "resolved_at": now(), "decided_by": "SEMANTIC_IMPACT_CHECK"}
+                if changes:
+                    log(db, project_id, "CHANGE", "新增支持性證據未改變需求，沿用既有決策與基準")
+                changes = []
             for change in changes:
                 relevant = [
                     r.id
@@ -340,6 +383,22 @@ def _execute(project_id, run_id, epoch):
                     "CHANGE_REVIEW",
                     "新證據可能影響已定版 PRD",
                     "請檢查變更影響，決定建立修訂或保留追溯但不改版。舊版內容不會改寫。",
+                )
+                project.runtime = "WAITING_HUMAN"
+            elif project.state.get("change_analysis") and not (project.current_revision_id and not changes) and not (
+                project.state.get("delegation_mode") == "AUTO_DECIDE_SAFE"
+                and not project.state["change_analysis"].get("critical_questions")
+                and project.state["change_analysis"].get("model_status") != "PENDING"
+                and all(r.decision.get("action") in {"ACCEPT", "MODIFY", "REJECT"}
+                        for r in db.scalars(select(Requirement).where(Requirement.project_id == project_id)))
+            ) and (
+                (project.state.get("change_review") or {}).get("status") != "APPROVED"
+                or (project.state.get("change_review") or {}).get("fingerprint") != project.state["change_analysis"].get("fingerprint")
+            ):
+                report = project.state["change_analysis"]
+                interruption(
+                    db, project, "REQUIREMENT_REVIEW", "AI 需求變更提案待整體審閱",
+                    f"已整理 {len(report.get('proposals', []))} 項變更；其中 {len(report.get('critical_questions', []))} 項重要問題需先決策。",
                 )
                 project.runtime = "WAITING_HUMAN"
             elif any(
@@ -372,6 +431,46 @@ def _execute(project_id, run_id, epoch):
                 "plan": plan(project),
             }
             db.commit()
+        if config.get("provider") != "mock":
+            from .change_analysis import enrich_report
+            with Session() as read_db:
+                read_project = read_db.get(Project, project_id)
+                report = (read_project.state or {}).get("change_analysis") or {}
+            if report.get("model_status") == "PENDING":
+                activity.stage("生成變更提案", "整理正式需求、驗收條件與可比較方案")
+                try:
+                    suggestions = enrich_report(report, {**config, "_project_id": project_id})
+                    outcome = "COMPLETE"
+                    error = ""
+                except Exception as exc:
+                    suggestions, outcome, error = [], "ERROR", str(exc)[:300]
+                with Session.begin() as save_db:
+                    save_project = save_db.get(Project, project_id)
+                    if save_project and save_project.epoch == epoch:
+                        current_report = dict((save_project.state or {}).get("change_analysis") or {})
+                        if current_report.get("fingerprint") == report.get("fingerprint"):
+                            enhanced = {item["requirement_id"]: item for item in suggestions}
+                            for proposal in current_report.get("proposals", []):
+                                suggestion = enhanced.get(proposal["requirement_id"])
+                                if suggestion:
+                                    proposal["proposed_requirement"] = {
+                                        "statement": suggestion["formal_statement"],
+                                        "acceptance_criteria": suggestion["acceptance_criteria"] or
+                                                               ["待 PM 確認可驗證的成功與例外情境"]}
+                                    proposal["alternatives"] = suggestion["alternatives"]
+                                    proposal["risks"] = list(dict.fromkeys(proposal["risks"] + suggestion["risks"]))
+                                    proposal["model_recommendation_reason"] = suggestion["recommendation_reason"]
+                            current_report["model_status"] = outcome
+                            current_report["model_error"] = error
+                            save_project.state = {**save_project.state, "change_analysis": current_report}
+                            if save_project.state.get("delegation_mode") == "AUTO_DECIDE_SAFE" and not save_project.current_revision_id and not current_report.get("critical_questions"):
+                                rows = list(save_db.scalars(select(Requirement).where(Requirement.project_id == project_id)))
+                                if rows and all(row.decision.get("action") in {"ACCEPT", "MODIFY", "REJECT"} for row in rows):
+                                    for row in rows:
+                                        proposal = next((p for p in current_report["proposals"] if p["requirement_id"] == row.id), None)
+                                        if proposal and row.decision.get("decided_by") == "AGENT_DELEGATED":
+                                            row.decision = {**row.decision, "statement": proposal["proposed_requirement"]["statement"]}
+                                    create_draft(save_db, save_project)
         if enabled(config, "agent_split"):
             activity.stage("Agent 證據審閱", "比對需求與來源，產生供人工審閱的建議")
             from .model_assist import judge_requirements

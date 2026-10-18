@@ -452,7 +452,8 @@ def apply_analysis(db, project, extracted):
             )
         )
         all_facts = [
-            {**a.data, "source_id": a.source_id, "assertion_id": a.id}
+            {**a.data, "source_id": a.source_id, "source_kind": (db.get(Source, a.source_id).kind if db.get(Source, a.source_id) else ""),
+             "assertion_id": a.id}
             for a in assertions
         ]
         meeting_facts = [f for f in all_facts if f.get("meeting_id")]
@@ -460,14 +461,35 @@ def apply_analysis(db, project, extracted):
         active = [f for f in all_facts if not f.get("meeting_id")]
         active.extend(current)
         # A confirmed replacement only retires the specific assertion it names.
+        def valid_replacement(new, old):
+            newer, older = db.get(Source, new.get("source_id")), db.get(Source, old.get("source_id"))
+            if not newer or not older:
+                return False
+            if newer.kind == "INTERNAL_POLICY" and older.kind == "INTERNAL_POLICY":
+                meta = newer.meta or {}
+                return meta.get("approval_status") == "APPROVED" and old.get("source_id") in meta.get("supersedes_source_ids", [])
+            if not explicitly_replaces(new, old):
+                return False
+            if newer.kind == older.kind == "MEETING_RECORD":
+                return True
+            if new.get("meeting_id") and older.kind != "INTERNAL_POLICY":
+                return True
+            return False
+
         replaced = {old.get("assertion_id") for f in active
-                    for old in active if f is not old and explicitly_replaces(f, old)
+                    for old in active if f is not old and valid_replacement(f, old)
                     if old.get("assertion_id")}
         for old in active:
             if old.get("assertion_id") in replaced:
                 old["validity"] = "SUPERSEDED"
         active = [f for f in active if f.get("assertion_id") not in replaced]
-        conflicts = [(a, b) for i, a in enumerate(active) for b in active[i + 1:]
+        sources = {f.get("source_id"): db.get(Source, f.get("source_id")) for f in active}
+        # A new request differing from the current rule describes a change. Only
+        # simultaneous approved policies can produce a blocking source conflict.
+        authoritative = [f for f in active if sources.get(f.get("source_id"))
+                         and sources[f["source_id"]].kind == "INTERNAL_POLICY"
+                         and (sources[f["source_id"]].meta or {}).get("approval_status", "APPROVED") == "APPROVED"]
+        conflicts = [(a, b) for i, a in enumerate(authoritative) for b in authoritative[i + 1:]
                      if contradiction(a, b)]
         for left, right in conflicts:
             left.setdefault("conflicts_with", []).append(right.get("assertion_id"))
@@ -511,11 +533,20 @@ def apply_analysis(db, project, extracted):
                     {k: v for k, v in f.items() if k != "assertion_id"} for f in items
                 ]
 
-            if (
-                req.statement != statement
-                or req.status != status
-                or meaningful(req.evidence) != meaningful(evidence)
-            ):
+            from .change_analysis import normal
+            from difflib import SequenceMatcher
+            old_active = [f for f in req.evidence if f.get("validity") != "SUPERSEDED"]
+            new_active = [f for f in evidence if f.get("validity") != "SUPERSEDED"]
+            def equivalent(left, right):
+                a, b = normal(left.get("statement")), normal(right.get("statement"))
+                return (left.get("condition", "") == right.get("condition", "")
+                        and left.get("value", "") == right.get("value", "")
+                        and (a == b or SequenceMatcher(None, a, b).ratio() >= 0.88))
+            retained = all(any(old.get("source_id") == fresh.get("source_id")
+                               and equivalent(old, fresh) for fresh in new_active)
+                           for old in old_active)
+            material_change = req.status != status or not retained
+            if material_change:
                 req.decision = {}
             req.statement, req.status, req.evidence = statement, status, evidence
         db.flush()
@@ -530,6 +561,8 @@ def apply_analysis(db, project, extracted):
         }
     )
     project.state = state
+    from .change_analysis import save_report
+    save_report(db, project)
     log(
         db,
         project.id,

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
+    "test:server": "node --test test/server.test.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

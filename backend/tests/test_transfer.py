@@ -1,10 +1,9 @@
-import re
 from app.db import Session, Event
 from app.main import initial_event_cursor
 from sqlalchemy import select
 
 
-def test_large_project_is_compressed_and_assets_are_cacheable(client):
+def test_large_project_is_compressed_and_backend_is_api_only(client):
     created = client.post("/api/projects", json={
         "name": "傳輸測試",
         "description": "測試說明。" * 1200,
@@ -16,14 +15,8 @@ def test_large_project_is_compressed_and_assets_are_cacheable(client):
     assert response.headers["content-encoding"] == "gzip"
     assert response.headers["cache-control"] == "private, no-store"
 
-    page = client.get("/")
-    assert page.headers["cache-control"] == "no-cache"
-    asset = re.search(r'/assets/[^" ]+\.js', page.text)
-    assert asset
-    cached = client.get(asset.group(0), headers={"Accept-Encoding": "gzip"})
-    assert cached.status_code == 200
-    assert cached.headers["cache-control"] == "public, max-age=31536000, immutable"
-    assert cached.headers["content-encoding"] == "gzip"
+    assert client.get("/").status_code == 404
+    assert client.get("/assets/example.js").status_code == 404
 
 
 def test_new_event_connection_skips_old_history(client):

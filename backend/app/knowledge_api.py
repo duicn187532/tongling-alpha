@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from .db import KnowledgeServer, Project, RemoteQueryAudit, Workspace
+from . import client_gateway
 from .intelligence import settings
 from .knowledge_federation import (
     CACHE_POLICIES, HttpKnowledgeServerProvider, policy_for,
@@ -39,6 +40,35 @@ class ServerInput(BaseModel):
 class SearchInput(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     project_id: str
+
+
+class ServerSearchInput(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+def search_project(db, query, project_id):
+    """Same retrieval path for the existing API and durable background jobs."""
+    from .retrieval import retrieve
+    project = db.get(Project, project_id)
+    if not project or project.status != "ACTIVE":
+        raise HTTPException(404, "找不到專案")
+    policy = policy_for(db, project_id, settings(db))
+    before = set(db.scalars(select(RemoteQueryAudit.id).where(RemoteQueryAudit.project_id == project_id)))
+    results = retrieve(db, query, project_id, settings(db))
+    events = list(db.scalars(select(RemoteQueryAudit).where(RemoteQueryAudit.project_id == project_id).order_by(RemoteQueryAudit.created_at.desc()).limit(10)))
+    warnings = [e.detail for e in events if e.id not in before and e.status == "DEGRADED" and e.detail]
+    if "SERVER_SHARED" in policy["scopes"] and not policy["allow_remote_query"]:
+        warnings.append("遠端查詢尚未允許；只使用本機知識。")
+    elif "SERVER_SHARED" in policy["scopes"] and not policy["server_enabled"]:
+        warnings.append("此專案已停用知識伺服器；只使用本機可用來源。")
+    elif "SERVER_SHARED" in policy["scopes"] and policy["allow_remote_query"] and policy["server_enabled"]:
+        if not db.scalar(select(KnowledgeServer.id).where(KnowledgeServer.enabled == 1)):
+            warnings.append("尚未啟用知識伺服器；目前只使用本機可用來源。")
+    return {"results": results, "knowledge_mode": policy["mode"],
+            "local_count": sum(r["source_location"] == "LOCAL" for r in results),
+            "remote_count": sum(r["source_location"] == "REMOTE" for r in results),
+            "warnings": warnings}
 
 
 def register(app, get_db, get):
@@ -122,6 +152,27 @@ def register(app, get_db, get):
         except Exception as exc:
             return {"status": "UNAVAILABLE", "detail": str(exc)[:200], "capabilities": []}
 
+    @app.get("/api/knowledge/servers/{sid}/documents")
+    def server_documents(sid: str, db=Depends(get_db)):
+        if client_gateway.IS_GATEWAY:
+            raise HTTPException(403, "只供主機管理")
+        server = get(db, KnowledgeServer, sid)
+        return HttpKnowledgeServerProvider(server).list_documents()
+
+    @app.post("/api/knowledge/servers/{sid}/preview")
+    def server_preview(sid: str, body: ServerSearchInput, db=Depends(get_db)):
+        if client_gateway.IS_GATEWAY:
+            raise HTTPException(403, "只供主機管理")
+        server = get(db, KnowledgeServer, sid)
+        return {"results": HttpKnowledgeServerProvider(server).search(body.query, body.top_k)}
+
+    @app.post("/api/knowledge/servers/{sid}/rescan")
+    def server_rescan(sid: str, db=Depends(get_db)):
+        if client_gateway.IS_GATEWAY:
+            raise HTTPException(403, "只供主機管理")
+        server = get(db, KnowledgeServer, sid)
+        return HttpKnowledgeServerProvider(server).rescan()
+
     @app.get("/api/knowledge/remote-audit")
     def audit(project_id: str | None = None, db=Depends(get_db)):
         query = select(RemoteQueryAudit).order_by(RemoteQueryAudit.created_at.desc()).limit(50)
@@ -135,21 +186,5 @@ def register(app, get_db, get):
 
     @app.post("/api/retrieval/search")
     def search(body: SearchInput, db=Depends(get_db)):
-        from .retrieval import retrieve
         get(db, Project, body.project_id)
-        policy = policy_for(db, body.project_id, settings(db))
-        before = set(db.scalars(select(RemoteQueryAudit.id).where(RemoteQueryAudit.project_id == body.project_id)))
-        results = retrieve(db, body.query, body.project_id, settings(db))
-        events = list(db.scalars(select(RemoteQueryAudit).where(RemoteQueryAudit.project_id == body.project_id).order_by(RemoteQueryAudit.created_at.desc()).limit(10)))
-        warnings = [e.detail for e in events if e.id not in before and e.status == "DEGRADED" and e.detail]
-        if "SERVER_SHARED" in policy["scopes"] and not policy["allow_remote_query"]:
-            warnings.append("遠端查詢尚未允許；只使用本機知識。")
-        elif "SERVER_SHARED" in policy["scopes"] and not policy["server_enabled"]:
-            warnings.append("此專案已停用知識伺服器；只使用本機可用來源。")
-        elif "SERVER_SHARED" in policy["scopes"] and policy["allow_remote_query"] and policy["server_enabled"]:
-            if not db.scalar(select(KnowledgeServer.id).where(KnowledgeServer.enabled == 1)):
-                warnings.append("尚未啟用知識伺服器；目前只使用本機可用來源。")
-        return {"results": results, "knowledge_mode": policy["mode"],
-                "local_count": sum(r["source_location"] == "LOCAL" for r in results),
-                "remote_count": sum(r["source_location"] == "REMOTE" for r in results),
-                "warnings": warnings}
+        return search_project(db, body.query, body.project_id)

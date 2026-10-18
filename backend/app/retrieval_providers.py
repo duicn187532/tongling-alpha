@@ -85,14 +85,27 @@ class OllamaBase:
         self._metadata = None
 
     def request(self, method, path, **kwargs):
-        with httpx.Client(
-            timeout=httpx.Timeout(self.config.get("timeout", 180), connect=5),
-            trust_env=False,
-            follow_redirects=False,
-        ) as client:
-            response = client.request(method, self.endpoint + path, **kwargs)
-            response.raise_for_status()
-            return response.json()
+        infer = method == "POST" and path in {"/api/chat", "/api/embed"}
+        if infer:
+            from .db import Session
+            from .intelligence import settings
+            from .resource_limits import acquire_llm
+            with Session() as db:
+                limit = int(settings(db).get("model_concurrency", 2))
+            acquire_llm(limit, int(self.config.get("timeout", 180)))
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(self.config.get("timeout", 180), connect=5),
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
+                response = client.request(method, self.endpoint + path, **kwargs)
+                response.raise_for_status()
+                return response.json()
+        finally:
+            if infer:
+                from .resource_limits import release_llm
+                release_llm()
 
     def metadata(self):
         if self._metadata is None:

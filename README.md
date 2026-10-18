@@ -12,7 +12,7 @@
 .\start.cmd
 ```
 
-第一次啟動會建立 `.venv`、安裝鎖定的依賴、建置前端並建立本機 `data/`。之後每次會檢查依賴版本、重新建置前端及執行資料庫遷移。管理工作台只綁定 `127.0.0.1:8000`；請勿把 8000 轉送到公網。若不想自動開瀏覽器，可執行 `powershell -ExecutionPolicy Bypass -File .\start.ps1 -NoBrowser`。
+第一次啟動會建立 `.venv`、安裝鎖定的依賴、建置前端並建立本機 `data/`。之後每次會檢查依賴版本，前端檔案有變更時才重新建置，並執行資料庫遷移。啟動後會分別開啟前端（`127.0.0.1:5173`）、後端（`127.0.0.1:8000`）與公司檔案模擬服務（`127.0.0.1:8765`）命令視窗，即時顯示各自日誌；主機請使用前端網址。這些入口都只綁定本機，請勿轉送到公網。若不想自動開瀏覽器，可執行 `powershell -ExecutionPolicy Bypass -File .\start.ps1 -NoBrowser`。
 
 關閉主機與由本套件啟動的客戶端／ngrok 通道：
 
@@ -20,19 +20,25 @@
 .\stop.cmd
 ```
 
-只關閉遠端客戶端通道：`powershell -ExecutionPolicy Bypass -File .\Stop-ClientAccess.ps1`。啟動視窗保持前景時也可用 `Ctrl+C` 關閉主機。詳細步驟與故障排除見 [部署指南](docs/DEPLOYMENT.md)。
+只關閉遠端客戶端通道：雙擊 `stop-client.cmd`。詳細步驟與故障排除見 [部署指南](docs/DEPLOYMENT.md)。
 
 ## 遠端客戶端
 
-先在主機啟動本機管理端，並自行安裝 ngrok、在**自己的終端機**設定 authtoken。然後執行：
+先自行安裝 ngrok、在**自己的終端機**設定 authtoken。此後只要雙擊：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Start-ClientAccess.ps1
-```
+`client.cmd`
 
-腳本會在 `127.0.0.1:8001` 啟動受限入口，建立 HTTPS 通道；配對碼只在主機顯示。遠端使用者可以選手動或 Agent 模式，但不能管理主機設定。只有客戶端入口 8001 可連到通道，絕不可把 8000 指向 ngrok。配對與專案仍儲存在主機本地，關閉或重啟主機不會把資料上傳到 GitHub。
+腳本會視需要啟動主機、在 `127.0.0.1:8001` 啟動受限 API、在 `127.0.0.1:8002` 啟動客戶端前端，並建立或接續指向 8002 的 HTTPS 通道。客戶端前端、受限後端與 ngrok 各有一個即時日誌視窗；配對碼只在主機顯示。遠端使用者可以選手動或 Agent 模式，但不能管理主機設定。絕不可把管理入口 8000 或 5173 指向 ngrok。配對與專案仍儲存在主機本地，關閉或重啟主機不會把資料上傳到 GitHub。
 
 ## 使用範圍
+
+### PM 專案總覽
+
+首頁是跨專案工作管理台，按需要處理的程度顯示每案的 PRD 流程里程碑、AI 狀態、證據與需求數、系統建議下一步，以及 PM 自己建立的代辦與日期。代辦保存在主機專案資料庫，配對客戶端只看自己的專案。首頁的進度是五個可驗證里程碑的完成比例，並非 AI 執行百分比。彤靈負責需求到 PRD 的工作狀態；外部文件服務、搜尋與模型可以連接，但本機內建知識庫與離線流程可獨立運作。PRD 預覽的 IT 缺項參考清單預設收起，可由使用者開關，並不阻擋業務 PRD 定版。
+
+### 兩種知識來源
+
+主機設定頁的「知識來源」分別呈現彤靈內建知識庫與公司檔案服務器。內建知識庫使用 `data/` 儲存文件、標籤、圖譜與索引；管理按鈕可直接進入文件及檢索管理。獨立的公司檔案模擬服務掃描 `company_files/`，透過 HTTP API 提供文件清單與搜尋，不會將整個資料夾複製進內建知識庫。首次啟動若資料夾為空，會放入兩份標示為虛構的範例文件。設定頁可一鍵連接本機模擬服務、測試、重新掃描及試查，也可改填企業自己的相容 API 網址與金鑰環境變數。對接契約與操作詳見 [架構說明](docs/ARCHITECTURE.md) 與 [部署指南](docs/DEPLOYMENT.md)。
 
 - 匯入文件或掃描專用資料夾，使用混合、向量及可選圖譜檢索，保留證據來源與相關性判斷。
 - 從一句需求開始，由 Agent 提示下一步，或改走手動分析、人工確認與 PRD 修訂。
@@ -44,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\Start-ClientAccess.ps1
 
 ## 隱私與開發
 
-執行資料一律放在 `data/` 或使用者指定的 `workspace_files/`；兩者、備份、日誌、虛擬環境、前端依賴與任何 `.env` 都不納入 Git。請不要在 issue、PR 或測試樣本中提交真實客戶資料、內部文件、金鑰或 ngrok 配對資訊。範例文件位於 `sample_data/demo_pack/`，明確標示為虛構資料。
+執行資料一律放在 `data/`、`company_files/` 或使用者指定的 `workspace_files/`；三者、備份、日誌、虛擬環境、前端依賴與任何 `.env` 都不納入 Git。請不要在 issue、PR 或測試樣本中提交真實客戶資料、內部文件、金鑰或 ngrok 配對資訊。範例文件位於 `sample_data/demo_pack/` 與 `sample_data/company_file_server/`，明確標示為虛構資料。
 
 後端測試：`cd backend; ..\.venv\Scripts\python.exe -m pytest -q`。前端檢查：`cd frontend; npm run build`。安全問題請依 [SECURITY.md](SECURITY.md) 私下回報；參與方式見 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

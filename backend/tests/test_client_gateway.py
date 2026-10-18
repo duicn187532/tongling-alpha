@@ -21,7 +21,7 @@ def clear_pairing_attempts():
 def test_gateway_pairing_and_project_isolation(client, monkeypatch):
     monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
     with TestClient(app, base_url="https://testserver") as alice, TestClient(app, base_url="https://testserver") as bob:
-        assert alice.get("/").status_code == 200
+        assert alice.get("/").status_code == 404  # HTML is served by the frontend process.
         assert alice.get("/openapi.json").status_code == 404
         assert alice.get("/api/session/context").json() == {"role": "CLIENT", "authenticated": False}
         assert alice.get("/api/projects").status_code == 401
@@ -36,6 +36,10 @@ def test_gateway_pairing_and_project_isolation(client, monkeypatch):
         assert "client_owner_id" not in first.json()["state"]
         assert [p["id"] for p in alice.get("/api/projects").json()] == [pid]
         assert bob.get("/api/projects").json() == []
+        assert [p["id"] for p in alice.get("/api/dashboard").json()["projects"]] == [pid]
+        assert bob.get("/api/dashboard").json()["projects"] == []
+        assert bob.post(f"/api/projects/{pid}/todos", json={"title": "不應存取"}).status_code == 404
+        assert alice.post(f"/api/projects/{pid}/todos", json={"title": "客戶端代辦"}).status_code == 200
         assert bob.get(f"/api/projects/{pid}").status_code == 404
         assert bob.get(f"/api/projects/{pid}/pulse").status_code == 404
         assert bob.post(f"/api/projects/{pid}/agent/continue").status_code == 404

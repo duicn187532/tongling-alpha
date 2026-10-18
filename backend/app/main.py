@@ -7,7 +7,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Literal
@@ -23,14 +23,16 @@ from fastapi import (
     Form,
 )
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from .db import (
     Session,
     Workspace,
+    AppJob,
+    ClientSession,
+    ResourceLease,
     Project,
     Source,
     Link,
@@ -76,10 +78,10 @@ from .lifecycle import (
     re_unsafe,
 )
 from .workflow import launch, plan
-from . import meeting_service
+from . import meeting_service, project_hub
 from . import workspace_files
 from . import activity
-from . import prd_templates, enrichment, v7_api, retrieval, project_lifecycle, knowledge_api, knowledge_management, client_gateway
+from . import prd_templates, enrichment, v7_api, retrieval, project_lifecycle, knowledge_api, knowledge_management, client_gateway, job_queue
 
 LAN = os.getenv("TONGLING_LAN") == "1"
 PAIR_CODE = secrets.token_urlsafe(9)
@@ -88,11 +90,14 @@ sessions = {}
 attempts = {}
 
 
-@asynccontextmanager
-async def lifespan(app):
+def _recover_startup_state():
     from .db import ResearchRun
 
     with Session() as db:
+        queued_agents = list(db.scalars(select(AppJob).where(
+            AppJob.kind == "AGENT", AppJob.status == "QUEUED")))
+        queued_agent_runs = {job.payload.get("run_id") for job in queued_agents}
+        queued_agent_projects = {job.project_id for job in queued_agents}
         for research in db.scalars(
             select(ResearchRun).where(ResearchRun.status.in_(["RUNNING", "QUEUED"]))
         ):
@@ -105,6 +110,8 @@ async def lifespan(app):
         for task in db.scalars(
             select(Activity).where(Activity.status.in_(["RUNNING", "QUEUED"]))
         ):
+            if task.id in queued_agent_runs:
+                continue
             task.status, task.detail, task.finished_at = (
                 "INTERRUPTED",
                 "服務已重新啟動，本次工作中斷。請重新執行。",
@@ -115,22 +122,42 @@ async def lifespan(app):
         if not db.scalar(select(Workspace)):
             db.add(Workspace(name="我的工作空間", settings=DEFAULT_SETTINGS))
         for run in db.scalars(select(Run).where(Run.status == "RUNNING")):
+            if run.id in queued_agent_runs:
+                continue
             run.status, run.error = "INTERRUPTED", "程式重新啟動；可從檢查點繼續"
         for project in db.scalars(select(Project).where(Project.runtime == "RUNNING")):
+            if project.id in queued_agent_projects:
+                continue
             project.runtime = "PAUSED"
             project.epoch += 1
+        for project in db.scalars(select(Project).where(Project.status == "ACTIVE")):
+            report = (project.state or {}).get("change_analysis") or {}
+            if report.get("model_status") == "PENDING":
+                project.state = {**project.state, "change_analysis": {
+                    **report, "model_status": "ERROR",
+                    "model_error": "服務重啟中斷提案生成；基礎分析仍可審閱，亦可重新執行分析。"}}
         for meeting in db.scalars(select(Meeting).where(Meeting.status == "ANALYZING")):
             meeting.status, meeting.analysis_error = (
                 "ERROR",
                 "上次分析因服務重啟中斷；逐字稿已保存，請重新分析。",
             )
         db.commit()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # The gateway shares the database, but only the host owns workers and may
+    # recover interrupted work. Restarting a gateway must not pause a live Agent.
+    if not client_gateway.IS_GATEWAY:
+        _recover_startup_state()
     if LAN:
         print(f"TongLing pairing code (10 min): {PAIR_CODE}", flush=True)
     if not client_gateway.IS_GATEWAY:
         enrichment.start()
+        job_queue.start()
     yield
     if not client_gateway.IS_GATEWAY:
+        job_queue.shutdown()
         enrichment.shutdown()
 
 
@@ -150,12 +177,8 @@ async def access_control(request, call_next):
     async def served():
         response = await call_next(request)
         path = request.url.path
-        if path.startswith("/assets/"):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        elif path.startswith("/api/"):
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "private, no-store"
-        elif path in {"/", "/index.html"}:
-            response.headers["Cache-Control"] = "no-cache"
         return response
 
     if client_gateway.IS_GATEWAY:
@@ -165,7 +188,7 @@ async def access_control(request, call_next):
         if hostname not in {"localhost", "127.0.0.1", "testserver", public_host}:
             return JSONResponse({"detail": "不允許的客戶端網址"}, status_code=400)
         path = request.url.path
-        if not (path == "/" or path == "/index.html" or path.startswith("/assets/") or path.startswith("/api/")):
+        if not path.startswith("/api/"):
             return JSONResponse({"detail": "找不到頁面"}, status_code=404)
         if request.url.path.startswith("/api/") and not client_gateway.client_route_allowed(request.method, request.url.path):
             return JSONResponse({"detail": "此操作只供彤靈主機管理"}, status_code=403)
@@ -173,6 +196,22 @@ async def access_control(request, call_next):
             origin = request.headers.get("origin")
             if origin and urlparse(origin).netloc != request.headers.get("host"):
                 return JSONResponse({"detail": "跨來源寫入不被允許"}, status_code=403)
+        if (client_gateway.DEMO_NO_PAIR and request.url.path.startswith("/api/")
+                and request.url.path not in {"/api/health", "/api/pair", "/api/logout"}):
+            client_id = client_gateway.session_client(request.cookies.get("tongling_session", ""))
+            token = None
+            if not client_id:
+                client_id = secrets.token_urlsafe(24)
+                token = client_gateway.new_session(client_id)
+            context_token = client_gateway.CURRENT_CLIENT.set(client_id)
+            try:
+                response = await served()
+                if token:
+                    response.set_cookie("tongling_session", token, httponly=True, samesite="lax",
+                                        secure=request.url.scheme == "https", max_age=client_gateway.SESSION_TTL)
+                return response
+            finally:
+                client_gateway.CURRENT_CLIENT.reset(context_token)
         if request.url.path.startswith("/api/") and request.url.path not in {"/api/health", "/api/pair", "/api/session/context"}:
             client_id = client_gateway.session_client(request.cookies.get("tongling_session", ""))
             if not client_id:
@@ -307,8 +346,32 @@ class DecisionInput(BaseModel):
     category: Literal["FUNCTIONAL", "BUSINESS_RULE", "OPEN_ISSUE", "DECISION_CONTEXT", "SCOPE_EXCLUSION"] = "FUNCTIONAL"
 
 
+class ProposalReviewInput(BaseModel):
+    action: Literal["APPROVE", "DEFER"]
+    fingerprint: str
+    rationale: str = ""
+
+
 class GuidanceInput(BaseModel):
     brief: str = Field(min_length=1, max_length=4000)
+
+
+class BackgroundJobInput(BaseModel):
+    kind: Literal["GUIDANCE", "RAG", "PRD"]
+    project_id: str | None = None
+    brief: str = Field(default="", max_length=4000)
+    query: str = Field(default="", max_length=1000)
+
+
+class QueueSettingsInput(BaseModel):
+    model_concurrency: int = Field(default=2, ge=1, le=4)
+    prd_concurrency: int = Field(default=1, ge=1, le=3)
+    retrieval_concurrency: int = Field(default=4, ge=1, le=8)
+    agent_concurrency: int = Field(default=4, ge=1, le=8)
+    queue_capacity: int = Field(default=40, ge=1, le=200)
+    per_user_jobs: int = Field(default=3, ge=1, le=10)
+    job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    max_retries: int = Field(default=1, ge=0, le=3)
 
 
 class DelegationInput(BaseModel):
@@ -333,6 +396,10 @@ class MeetingInput(BaseModel):
     timezone: str = "Asia/Taipei"
     participants: list[str] = Field(default_factory=list)
     transcript: str = Field(default="", max_length=200000)
+
+
+class MeetingConfirmInput(BaseModel):
+    selected_indices: list[int] | None = None
 
 
 class SettingsInput(BaseModel):
@@ -362,6 +429,7 @@ class SettingsInput(BaseModel):
     research_topic: str = Field(default="", max_length=180)
     research_limit: int = Field(default=5, ge=1, le=10)
     knowledge_policy: dict = Field(default_factory=dict)
+    demo_queue: dict = Field(default_factory=dict)
 
 
 @app.get("/api/health")
@@ -372,7 +440,7 @@ def health():
 @app.get("/api/session/context")
 def session_context(request: Request):
     if client_gateway.IS_GATEWAY:
-        owner = client_gateway.session_client(request.cookies.get("tongling_session", ""))
+        owner = client_gateway.CURRENT_CLIENT.get() or client_gateway.session_client(request.cookies.get("tongling_session", ""))
         return {"role": "CLIENT", "authenticated": bool(owner)}
     return {"role": "HOST", "authenticated": True}
 
@@ -583,6 +651,7 @@ def read_settings(db=Depends(get_db)):
 @app.put("/api/settings")
 def save_settings(body: SettingsInput, db=Depends(get_db)):
     config = body.model_dump()
+    config["demo_queue"] = job_queue.validate(config["demo_queue"])
     from .knowledge_federation import validate_policy
     config["knowledge_policy"] = validate_policy(config["knowledge_policy"])
     from .retrieval_v2 import RetrievalConfig
@@ -602,6 +671,65 @@ def save_settings(body: SettingsInput, db=Depends(get_db)):
     row = db.scalar(select(Workspace))
     row.settings = config
     return config
+
+
+def _host_admin(request):
+    if client_gateway.IS_GATEWAY or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
+        raise HTTPException(403, "僅供主機本機管理")
+
+
+@app.get("/api/admin/queue/settings")
+def queue_settings(request: Request, db=Depends(get_db)):
+    _host_admin(request)
+    return {**job_queue.config(db), "model_concurrency": settings(db).get("model_concurrency", 2)}
+
+
+@app.put("/api/admin/queue/settings")
+def save_queue_settings(body: QueueSettingsInput, request: Request, db=Depends(get_db)):
+    _host_admin(request)
+    data = body.model_dump()
+    model_limit = data.pop("model_concurrency")
+    row = db.scalar(select(Workspace))
+    row.settings = {**row.settings, "model_concurrency": model_limit,
+                    "demo_queue": job_queue.validate(data)}
+    return {**data, "model_concurrency": model_limit}
+
+
+@app.get("/api/admin/queue/status")
+def queue_status(request: Request, db=Depends(get_db)):
+    _host_admin(request)
+    import shutil
+    import subprocess
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    counts = {name: db.scalar(select(func.count()).select_from(AppJob).where(AppJob.status == name)) or 0
+              for name in ("QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED")}
+    active_sessions = db.scalar(select(func.count(func.distinct(ClientSession.client_id))).where(
+        ClientSession.revoked_at.is_(None), ClientSession.expires_at > int(time.time()),
+        ClientSession.last_seen_at >= int(time.time()) - 300)) or 0
+    recent_errors = db.scalar(select(func.count()).select_from(AppJob).where(
+        AppJob.status == "FAILED", AppJob.finished_at >= cutoff)) or 0
+    llm_active = db.scalar(select(func.count()).select_from(ResourceLease).where(
+        ResourceLease.resource.in_(["LLM", "LLM_HEAVY"]), ResourceLease.expires_at > now())) or 0
+    active_jobs = [{"job_id": row.id, "kind": row.kind, "status": row.status,
+                    "session": "主機" if row.session_id == "host" else row.session_id[-6:],
+                    "project_id": row.project_id, "progress": row.progress,
+                    "created_at": row.created_at}
+                   for row in db.scalars(select(AppJob).where(
+                       AppJob.status.in_(["QUEUED", "RUNNING"])
+                   ).order_by(AppJob.created_at).limit(50))]
+    gpu = {"status": "UNAVAILABLE"}
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.total,utilization.gpu",
+                                     "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=2, check=True)
+            used, total, utilization = [int(value.strip()) for value in result.stdout.splitlines()[0].split(",")]
+            gpu = {"status": "AVAILABLE", "memory_used_mb": used, "memory_total_mb": total,
+                   "utilization_percent": utilization}
+        except Exception:
+            gpu = {"status": "UNAVAILABLE"}
+    return {"active_sessions": active_sessions, "jobs": counts, "active_jobs": active_jobs,
+            "errors_last_24h": recent_errors, "llm_active": llm_active,
+            "gpu": gpu, "settings": {**job_queue.config(db), "model_concurrency": settings(db).get("model_concurrency", 2)}}
 
 
 @app.get("/api/admin/model-router/preview")
@@ -711,6 +839,7 @@ def generation_impl(db):
 v7_api.register(app, get_db, get)
 knowledge_api.register(app, get_db, get)
 knowledge_management.register(app, get_db)
+project_hub.register(app, get_db, get)
 
 
 @app.get("/api/projects")
@@ -756,6 +885,71 @@ def create_project(body: ProjectInput, db=Depends(get_db)):
 def agent_guidance(body: GuidanceInput, db=Depends(get_db)):
     from .agent_guidance import suggest
     return suggest(body.brief, settings(db))
+
+
+@app.post("/api/jobs", status_code=202)
+def submit_job(body: BackgroundJobInput, request: Request, db=Depends(get_db)):
+    db.execute(text("BEGIN IMMEDIATE"))
+    project = get(db, Project, body.project_id) if body.project_id else None
+    if body.kind in {"RAG", "PRD"} and not project:
+        raise ValueError("此工作需要專案")
+    if body.kind == "GUIDANCE" and not body.brief.strip():
+        raise ValueError("請輸入需求起點")
+    if body.kind == "RAG" and not body.query.strip():
+        raise ValueError("請輸入檢索關鍵字")
+    payload = {"brief": body.brief.strip()} if body.kind == "GUIDANCE" else (
+        {"query": body.query.strip()} if body.kind == "RAG" else {})
+    key = request.headers.get("Idempotency-Key")
+    if key and (len(key) > 160 or len(key) < 8):
+        raise ValueError("Idempotency-Key 長度必須介於 8–160")
+    job = job_queue.submit(db, body.kind, project=project, payload=payload, idempotency_key=key)
+    return job_queue.public(job)
+
+
+@app.get("/api/jobs")
+def list_jobs(project_id: str | None = None, db=Depends(get_db)):
+    owner = job_queue.owner_id()
+    query = select(AppJob).where(AppJob.session_id == owner).order_by(AppJob.created_at.desc()).limit(30)
+    if project_id:
+        get(db, Project, project_id)
+        query = query.where(AppJob.project_id == project_id)
+    return [job_queue.public(row, include_result=False) for row in db.scalars(query)]
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str, db=Depends(get_db)):
+    job = db.get(AppJob, jid)
+    if not job or job.session_id != job_queue.owner_id():
+        raise HTTPException(404, "找不到工作")
+    if job.status == "QUEUED":
+        job.status, job.finished_at = "CANCELLED", now()
+    elif job.status == "RUNNING" and job.kind == "PRD":
+        raise HTTPException(409, "PRD 已開始寫入；完成後可檢視草稿")
+    elif job.status == "RUNNING":
+        job.cancel_requested = 1
+    if job.kind == "AGENT" and job.project_id and job.status in {"RUNNING", "CANCELLED"}:
+        project = db.get(Project, job.project_id)
+        activity.cancel_project(db, project.id)
+        project.epoch += 1
+        project.runtime = "PAUSED"
+    return job_queue.public(job)
+
+
+@app.post("/api/jobs/{jid}/resume", status_code=202)
+def resume_job(jid: str, db=Depends(get_db)):
+    db.execute(text("BEGIN IMMEDIATE"))
+    original = db.get(AppJob, jid)
+    if not original or original.session_id != job_queue.owner_id():
+        raise HTTPException(404, "找不到工作")
+    if original.status not in job_queue.TERMINAL:
+        raise ValueError("工作仍在排隊或執行中")
+    project = get(db, Project, original.project_id) if original.project_id else None
+    if original.kind == "AGENT":
+        row = launch(db, project)
+        resumed = db.get(AppJob, row.checkpoint["job_id"])
+    else:
+        resumed = job_queue.submit(db, original.kind, project=project, payload=original.payload)
+    return job_queue.public(resumed)
 
 
 @app.post("/api/projects/{pid}/agent/delegation")
@@ -1047,16 +1241,25 @@ def pause(pid: str, db=Depends(get_db)):
 
 @app.post("/api/projects/{pid}/analysis/run")
 def analyze_project(pid: str, db=Depends(get_db)):
-    return serialize(launch(db, get(db, Project, pid), force_analysis=True))
+    db.execute(text("BEGIN IMMEDIATE"))
+    run = launch(db, get(db, Project, pid), force_analysis=True)
+    return {**serialize(run), "job_id": run.checkpoint.get("job_id")}
 
 
 @app.post("/api/projects/{pid}/agent/continue")
 def run(pid: str, db=Depends(get_db)):
-    return serialize(launch(db, get(db, Project, pid)))
+    db.execute(text("BEGIN IMMEDIATE"))
+    run = launch(db, get(db, Project, pid))
+    return {**serialize(run), "job_id": run.checkpoint.get("job_id")}
 
 
 @app.get("/api/jobs/{rid}")
 def job(rid: str, db=Depends(get_db)):
+    queued = db.get(AppJob, rid)
+    if queued:
+        if queued.session_id != job_queue.owner_id():
+            raise HTTPException(404, "找不到工作")
+        return job_queue.public(queued)
     return serialize(get(db, Run, rid))
 
 
@@ -1133,10 +1336,18 @@ def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
     p = get(db, Project, r.project_id)
     if p.runtime == "RUNNING":
         raise ValueError("AI 工作仍在執行，請等待完成或暫停後再保存決策")
+    if (p.state.get("change_analysis") or {}).get("model_status") == "PENDING":
+        raise ValueError("AI 正在整理變更提案，請稍候再保存決策")
+    critical = next((q for q in (p.state.get("change_analysis") or {}).get("critical_questions", [])
+                     if q["requirement_id"] == rid), None)
+    if critical and body.action in {"ACCEPT", "MODIFY", "REJECT"} and not body.rationale.strip():
+        raise ValueError("重要變更決策須記錄理由與依據")
     if body.action in {"MODIFY", "REJECT"} and not body.rationale.strip():
         raise ValueError("修改或拒絕時須填寫理由")
     if body.action == "MODIFY" and not body.statement.strip():
         raise ValueError("請填入修改後的需求")
+    if body.action == "PENDING" and body.category == "OPEN_ISSUE" and not body.rationale.strip():
+        raise ValueError("保留待確認時，請填寫原因與待釐清問題")
     if (
         r.status in {"CONFLICT", "OPEN"}
         and body.action == "ACCEPT"
@@ -1181,6 +1392,49 @@ def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
         {"requirement_id": rid, "decision": r.decision},
     )
     return serialize(r)
+
+
+@app.post("/api/projects/{pid}/change-analysis/review")
+def review_change_analysis(pid: str, body: ProposalReviewInput, db=Depends(get_db)):
+    db.execute(text("BEGIN IMMEDIATE"))
+    p = get(db, Project, pid)
+    if p.runtime == "RUNNING" or p.state.get("analysis_stale"):
+        raise ValueError("請等分析完成後審閱最新提案")
+    report = p.state.get("change_analysis") or {}
+    if not report or body.fingerprint != report.get("fingerprint"):
+        raise ValueError("提案版本已變動，請重新檢視分析報告")
+    if report.get("model_status") == "PENDING":
+        raise ValueError("AI 正在整理變更提案，請稍候再審閱")
+    from .change_analysis import unresolved
+    rows = list(db.scalars(select(Requirement).where(Requirement.project_id == pid)))
+    if body.action == "APPROVE":
+        invalid_holds = [row for row in rows if row.decision.get("action") == "PENDING" and
+                         not (row.decision.get("category") == "OPEN_ISSUE" and row.decision.get("rationale"))]
+        if invalid_holds:
+            raise ValueError("保留待確認的項目須分類為待決事項並寫明原因")
+        questions = unresolved(report, rows)
+        if questions:
+            raise ValueError(f"尚有 {len(questions)} 項關鍵問題待決策；可逐項決策或保留待確認")
+        proposals = {item["requirement_id"]: item for item in report["proposals"]}
+        for row in rows:
+            if row.decision.get("action") in {"ACCEPT", "MODIFY", "REJECT", "PENDING"}:
+                continue
+            proposal = proposals.get(row.id, {})
+            if proposal.get("status") in {"TRUE_CONFLICT", "UNKNOWN", "UNSUPPORTED"}:
+                continue
+            row.decision = {"action": "ACCEPT", "statement": proposal.get("proposed_requirement", {}).get("statement") or row.statement,
+                            "rationale": "PM 整體審閱變更提案；此項納入 PRD 草稿，尚非正式業務基準。",
+                            "decided_at": now(), "decided_by": "PM_PROPOSAL_REVIEW"}
+        p.state = {**p.state, "change_review": {"status": "APPROVED", "fingerprint": body.fingerprint,
+                                                 "rationale": body.rationale, "reviewed_at": now()}, "draft_id": None}
+        resolve_interruptions(db, p, ["REQUIREMENT_REVIEW"])
+        log(db, pid, "PROPOSAL_REVIEW", "PM 已整體審閱變更提案；正式定版仍需另行核准")
+    else:
+        p.state = {**p.state, "change_review": {"status": "DEFERRED", "fingerprint": body.fingerprint,
+                                                 "rationale": body.rationale, "reviewed_at": now()}}
+        log(db, pid, "PROPOSAL_REVIEW", "PM 保留變更提案待確認")
+    return {"change_analysis": {**report, "review": p.state["change_review"]},
+            "requirements": [serialize(r) for r in rows]}
 
 
 @app.post("/api/change-requests/{cid}/resolve")
@@ -1457,9 +1711,14 @@ def create_meeting(pid: str, body: MeetingInput, db=Depends(get_db)):
     except ZoneInfoNotFoundError:
         raise ValueError("不支援的時區")
     if body.started_at:
-        started = datetime.fromisoformat(body.started_at)
+        try:
+            started = (datetime.fromisoformat(body.started_at) if "T" in body.started_at
+                       else datetime.fromisoformat(f"{body.meeting_date.isoformat()}T{body.started_at}").replace(tzinfo=ZoneInfo(body.timezone)))
+        except ValueError as exc:
+            raise ValueError("請輸入有效的開始時間，例如 14:00") from exc
         if not started.tzinfo or started.date() != body.meeting_date:
             raise ValueError("開始時間須含時區，且與會議日期相符")
+        body.started_at = started.isoformat()
     same = db.scalar(
         select(Meeting).where(
             Meeting.project_id == pid,
@@ -1558,7 +1817,7 @@ def analyze_meeting(mid: str, db=Depends(get_db)):
 
 
 @app.post("/api/meetings/{mid}/confirm")
-def confirm_meeting(mid: str, db=Depends(get_db)):
+def confirm_meeting(mid: str, body: MeetingConfirmInput | None = None, db=Depends(get_db)):
     row = get(db, Meeting, mid)
     if row.status == "CONFIRMED":
         return serialize(row)
@@ -1566,6 +1825,14 @@ def confirm_meeting(mid: str, db=Depends(get_db)):
         raise ValueError(
             "目前沒有可確認的紀錄。請補充逐字稿後重新分析，或人工整理會議紀錄。"
         )
+    if body and body.selected_indices is not None:
+        indices = body.selected_indices
+        if not indices or len(indices) != len(set(indices)) or any(index < 0 or index >= len(row.events) for index in indices):
+            raise ValueError("請至少選擇一項有效的會議紀錄")
+        excluded = len(row.events) - len(indices)
+        row.events = [row.events[index] for index in indices]
+    else:
+        excluded = 0
     p = get(db, Project, row.project_id)
     source = ingest(
         db,
@@ -1578,7 +1845,7 @@ def confirm_meeting(mid: str, db=Depends(get_db)):
     row.status, row.record_source_id = "CONFIRMED", source.id
     p.state = {**p.state, "waiting_meeting": False}
     resolve_interruptions(db, p, ["WAITING_MEETING"])
-    log(db, p.id, "MEETING_CONFIRMED", "人工確認會議紀錄", {"meeting_id": row.id})
+    log(db, p.id, "MEETING_CONFIRMED", "人工確認會議紀錄", {"meeting_id": row.id, "excluded_count": excluded})
     return serialize(row)
 
 
@@ -1639,8 +1906,3 @@ def meeting_ics(mid: str, db=Depends(get_db)):
         media_type="text/calendar",
         headers={"Content-Disposition": 'attachment; filename="meeting.ics"'},
     )
-
-
-frontend = ROOT / "frontend/dist"
-if frontend.exists():
-    app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")

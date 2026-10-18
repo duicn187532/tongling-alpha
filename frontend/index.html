@@ -7,6 +7,27 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#c94f67" />
+    <script>
+      (() => {
+        try {
+          const themes = ["default", "next", "cathay", "scsb", "sinopac", "yuanta"];
+          const modes = ["light", "dark", "system"];
+          const selectedTheme = localStorage.getItem("tongling-theme-v1");
+          const selectedMode = localStorage.getItem("tongling-color-mode-v1");
+          const theme = themes.includes(selectedTheme) ? selectedTheme : "default";
+          const mode = modes.includes(selectedMode) ? selectedMode : "system";
+          const scheme = mode === "system" ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : mode;
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.dataset.colorMode = mode;
+          document.documentElement.dataset.colorScheme = scheme;
+          document.documentElement.style.colorScheme = scheme;
+        } catch {
+          document.documentElement.dataset.theme = "default";
+          document.documentElement.dataset.colorMode = "system";
+          document.documentElement.dataset.colorScheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+      })();
+    </script>
     <title>彤靈談心 · 需求工作台</title>
   </head>
   <body>

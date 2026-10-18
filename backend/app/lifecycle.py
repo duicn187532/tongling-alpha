@@ -51,15 +51,26 @@ def human_gate(db, project):
     )
     if not rows:
         raise ValueError("尚無需求可形成 PRD")
+    report = (project.state or {}).get("change_analysis") or {}
+    if report.get("model_status") == "PENDING":
+        raise ValueError("AI 變更提案仍在生成，請稍候再產生 PRD")
+    review = (project.state or {}).get("change_review") or {}
+    if report and review.get("fingerprint") == report.get("fingerprint") and review.get("status") == "APPROVED":
+        from .change_analysis import unresolved
+        if unresolved(report, rows):
+            raise ValueError("仍有重大變更問題待人工決策")
     pending = [
         r
         for r in rows
         if r.decision.get("action") not in {"ACCEPT", "MODIFY", "REJECT"}
+        and not (report and review.get("status") == "APPROVED"
+                 and r.decision.get("action") == "PENDING"
+                 and r.decision.get("category") == "OPEN_ISSUE" and r.decision.get("rationale"))
     ]
     if pending:
         raise ValueError(f"仍有 {len(pending)} 項需求待人工決策")
     for row in rows:
-        if row.decision["action"] != "REJECT" and not row.evidence:
+        if row.decision["action"] in {"ACCEPT", "MODIFY"} and not row.evidence:
             raise ValueError("無證據的需求不可形成正式基準")
     if not any(
         r.decision["action"] != "REJECT"
@@ -162,6 +173,10 @@ def diagram_sources(requirements):
 
 def create_draft(db, project):
     rows = human_gate(db, project)
+    from .db import Source
+    def is_technical_evidence(fact):
+        source = db.get(Source, fact.get("source_id"))
+        return bool(source and source.status == "ACTIVE" and source.kind == "TECH_SPEC")
     existing = (
         db.get(Revision, project.state.get("draft_id"))
         if project.state.get("draft_id")
@@ -238,6 +253,11 @@ def create_draft(db, project):
         }
         for r in accepted
         if r.decision.get("category") == "OPEN_ISSUE"
+    ] + [
+        {"id": r.id, "statement": r.statement, "rationale": r.decision.get("rationale", ""),
+         "source_refs": sorted({f["source_id"] for f in r.evidence})}
+        for r in rows if r.decision.get("action") == "PENDING"
+        and r.decision.get("category") == "OPEN_ISSUE"
     ]
     content["risks"] = [
         {
@@ -270,6 +290,22 @@ def create_draft(db, project):
             .order_by(Meeting.meeting_date, Meeting.started_at)
         )
     ]
+    report = (project.state or {}).get("change_analysis") or {}
+    if report:
+        chosen = {r.id for r in accepted}
+        proposals = [p for p in report.get("proposals", []) if p["requirement_id"] in chosen]
+        content["change_analysis"] = {"goal": report.get("goal"), "summary": report.get("summary"),
+                                      "proposals": proposals, "review": (project.state or {}).get("change_review", {})}
+        content["current_state"] = [{"requirement_id": p["requirement_id"], "description": p["current_state"],
+                                     "source_refs": [r["source_id"] for r in p["evidence_uncertainty"]["references"]
+                                                     if r.get("source_id")]} for p in proposals]
+        content["change_scope"] = [{"requirement_id": p["requirement_id"], "action": p["status"],
+                                    "before": p["current_state"], "after": p["target_state"]} for p in proposals]
+        content["acceptance_criteria"] = [{"requirement_id": p["requirement_id"], "description": criterion,
+                                           "status": "TO_CONFIRM"}
+                                          for p in proposals for criterion in p["proposed_requirement"]["acceptance_criteria"]]
+        content["open_issues"] += [{"requirement_id": p["requirement_id"], "statement": issue}
+                                   for p in proposals for issue in p["evidence_uncertainty"]["open_questions"]]
     if not parent:
         content["diagrams"] = diagram_sources(requirements)
         technical = [
@@ -280,7 +316,7 @@ def create_draft(db, project):
             }
             for r in requirements
             for f in r["evidence"]
-            if f["kind"] == "SYSTEM_CAPABILITY"
+            if is_technical_evidence(f)
         ]
         content["it_impact"] = technical or [
             {
@@ -294,7 +330,7 @@ def create_draft(db, project):
         }
         if any(
             r["id"] in affected_ids
-            and any(f["kind"] == "SYSTEM_CAPABILITY" for f in r["evidence"])
+            and any(is_technical_evidence(f) for f in r["evidence"])
             for r in requirements
         ):
             content["it_impact"] = [
@@ -305,7 +341,14 @@ def create_draft(db, project):
                 }
                 for r in requirements
                 for f in r["evidence"]
-                if f["kind"] == "SYSTEM_CAPABILITY"
+                if is_technical_evidence(f)
+            ]
+        else:
+            content["it_impact"] = content.get("it_impact", []) + [
+                {"status": "OPEN", "requirement_id": r["id"],
+                 "description": f"{r['topic']}：系統、介面與資料影響待 SA 依技術來源確認。"}
+                for r in requirements if r["id"] in affected_ids
+                and not any(is_technical_evidence(f) for f in r["evidence"])
             ]
         if {r["topic"] for r in requirements} != {
             r["topic"] for r in parent.content["requirements"]
@@ -585,6 +628,12 @@ def baseline(db, project, revision):
             raise ValueError("技術補件不得改變已定版業務圖表")
     else:
         human_gate(db, project)
+        report = (project.state or {}).get("change_analysis") or {}
+        for question in report.get("critical_questions", []):
+            if question.get("reason") == "TRUE_CONFLICT":
+                item = db.get(Requirement, question["requirement_id"])
+                if item and item.decision.get("action") == "PENDING":
+                    raise ValueError("有效規範衝突仍待裁決，不可建立正式 PRD 基準")
     if project.state.get("draft_id") != revision.id:
         raise ValueError("此草稿已過時，請產生最新版本")
     if revision.parent_revision_id != project.current_revision_id:

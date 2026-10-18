@@ -10,6 +10,34 @@ def wait_meeting(client, mid):
     raise AssertionError("Meeting worker stalled")
 
 
+def test_meeting_accepts_local_clock_time_and_preserves_timezone(client, project):
+    response = client.post(
+        f"/api/projects/{project['id']}/meetings",
+        json={"title": "需求釐清", "meeting_date": "2026-10-18", "started_at": "14:00",
+              "transcript": "本次為測試會議"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["started_at"] == "2026-10-18T14:00:00+08:00"
+
+
+def test_pm_can_exclude_misread_meeting_finding_before_confirmation(client, project):
+    from app.db import Meeting, Session
+
+    meeting = client.post(
+        f"/api/projects/{project['id']}/meetings",
+        json={"title": "測試紀錄篩選", "meeting_date": "2026-10-19", "transcript": "第一項是決議；第二項被誤判。"},
+    ).json()
+    with Session() as db:
+        row = db.get(Meeting, meeting["id"])
+        row.status = "ANALYZED"
+        row.events = [{"statement": "已確認事項"}, {"statement": "不應納入的誤判"}]
+        db.commit()
+    response = client.post(f"/api/meetings/{meeting['id']}/confirm", json={"selected_indices": [0]})
+    assert response.status_code == 200, response.text
+    assert [item["statement"] for item in response.json()["events"]] == ["已確認事項"]
+    assert client.get(f"/api/meetings/{meeting['id']}").json()["status"] == "CONFIRMED"
+
+
 def test_empty_analysis_can_be_edited_and_manually_confirmed(client, project):
     meeting = client.post(
         f"/api/projects/{project['id']}/meetings",

@@ -88,12 +88,22 @@ def test_gated_decision_requires_calibration():
         runtime.validate_router(config(decision={"mode": "gated"}))
 
 
-def test_model_resource_wait_has_a_deadline(monkeypatch):
-    monkeypatch.setattr(runtime, "active", 1)
-    monkeypatch.setattr(runtime, "resource_limit", 1)
-    with pytest.raises(TimeoutError, match="等待逾時"):
-        runtime.acquire({"model_concurrency": 1}, timeout_seconds=0.01)
-    assert runtime.active == 1
+def test_model_resource_wait_has_a_deadline(client):
+    from app.db import ResourceLease, Session
+    from datetime import datetime, timedelta, timezone
+
+    with Session.begin() as db:
+        lease = ResourceLease(resource="LLM", owner_id="other-process",
+                              expires_at=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat())
+        db.add(lease)
+        db.flush()
+        lease_id = lease.id
+    try:
+        with pytest.raises(TimeoutError, match="等待逾時"):
+            runtime.acquire({"model_concurrency": 1}, timeout_seconds=0.01)
+    finally:
+        with Session.begin() as db:
+            db.delete(db.get(ResourceLease, lease_id))
 
 
 def test_completed_agent_card_is_not_cancelled_by_next_decision(project):

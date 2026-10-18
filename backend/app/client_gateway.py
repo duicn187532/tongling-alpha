@@ -19,6 +19,7 @@ from sqlalchemy import select
 from .db import DATA, ClientSession, Session, now
 
 IS_GATEWAY = os.getenv("TONGLING_CLIENT_GATEWAY") == "1"
+DEMO_NO_PAIR = os.getenv("TONGLING_DEMO_NO_PAIR") == "1"
 CURRENT_CLIENT: ContextVar[str | None] = ContextVar("tongling_client", default=None)
 SESSION_TTL = 30 * 86400
 ATTEMPTS: dict[str, list[float]] = {}
@@ -55,14 +56,21 @@ def session_client(token):
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     with Session() as db:
         row = db.scalar(select(ClientSession).where(ClientSession.token_hash == token_hash))
-        return row.client_id if row and not row.revoked_at and row.expires_at > time.time() else None
+        if not row or row.revoked_at or row.expires_at <= time.time():
+            return None
+        timestamp = int(time.time())
+        if row.last_seen_at < timestamp - 60:
+            row.last_seen_at = timestamp
+            db.commit()
+        return row.client_id
 
 
 def new_session(client_id):
     token = secrets.token_urlsafe(32)
     with Session.begin() as db:
         db.add(ClientSession(token_hash=hashlib.sha256(token.encode()).hexdigest(),
-                             client_id=client_id, expires_at=int(time.time()) + SESSION_TTL))
+                             client_id=client_id, expires_at=int(time.time()) + SESSION_TTL,
+                             last_seen_at=int(time.time())))
     return token
 
 
@@ -87,9 +95,13 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/pair"),
     ("POST", r"/api/logout"),
     ("GET", r"/api/client/workspace-config"),
+    ("GET", r"/api/dashboard"),
     ("GET", r"/api/projects"),
     ("GET", r"/api/projects/trash"),
     ("POST", r"/api/projects"),
+    ("POST", r"/api/projects/[^/]+/todos"),
+    ("PATCH", r"/api/projects/[^/]+/todos/[^/]+"),
+    ("DELETE", r"/api/projects/[^/]+/todos/[^/]+"),
     ("GET", r"/api/projects/[^/]+"),
     ("GET", r"/api/projects/[^/]+/pulse"),
     ("DELETE", r"/api/projects/[^/]+"),
@@ -102,8 +114,12 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/retrieval/search"),
     ("GET", r"/api/projects/[^/]+/events"),
     ("GET", r"/api/jobs/[^/]+"),
+    ("GET", r"/api/jobs"),
+    ("POST", r"/api/jobs"),
+    ("POST", r"/api/jobs/[^/]+/(cancel|resume)"),
     ("GET", r"/api/sources/[^/]+"),
     ("PUT", r"/api/requirements/[^/]+/decision"),
+    ("POST", r"/api/projects/[^/]+/change-analysis/review"),
     ("POST", r"/api/change-requests/[^/]+/resolve"),
     ("POST", r"/api/interruptions/[^/]+/dismiss"),
     ("POST", r"/api/meetings/[^/]+/(transcript|manual-record|analyze|confirm)"),

@@ -1,62 +1,96 @@
-﻿param([int]$AdminPort = 8000, [int]$ClientPort = 8001)
+﻿param([int]$AdminPort = 8000, [int]$ClientPort = 8001, [int]$FrontendPort = 8002)
 $ErrorActionPreference = 'Stop'
 $taskRoot = $PSScriptRoot
 $dataDir = Join-Path $taskRoot 'data'
-$python = Join-Path $taskRoot '.venv/Scripts/python.exe'
-$backend = Join-Path $taskRoot 'backend'
+$python = Join-Path $taskRoot '.venv\Scripts\python.exe'
 $urlFile = Join-Path $dataDir 'client_gateway_url.txt'
 
-if (-not (Test-Path -LiteralPath $python)) { throw '請先啟動彤靈主機，完成安裝。' }
-try { $null = Invoke-RestMethod "http://127.0.0.1:$AdminPort/api/health" -TimeoutSec 3 }
-catch { throw '請先在這台電腦啟動彤靈主機（8000）。' }
-$ngrok = Get-Command ngrok -ErrorAction SilentlyContinue
-if (-not $ngrok) { throw '找不到 ngrok。請先依官方指示安裝 ngrok。' }
-if (Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue) {
-    throw "客戶端連線埠 $ClientPort 已被使用。請先檢查現有客戶端服務。"
+if ($AdminPort -ne 8000 -or $ClientPort -ne 8001 -or $FrontendPort -ne 8002) {
+    throw '目前的雙擊啟動器固定使用 8000、8001、8002。'
 }
-if (Get-NetTCPConnection -LocalPort 4040 -State Listen -ErrorAction SilentlyContinue) {
-    throw 'ngrok 管理埠 4040 已被使用。請先關閉其他 ngrok 工作。'
+if (-not (Test-Path -LiteralPath $python)) {
+    & (Join-Path $taskRoot 'start.ps1') -NoBrowser
+}
+try { $admin = Invoke-RestMethod "http://127.0.0.1:$AdminPort/api/health" -TimeoutSec 3 }
+catch {
+    & (Join-Path $taskRoot 'start.ps1') -NoBrowser
+    $admin = Invoke-RestMethod "http://127.0.0.1:$AdminPort/api/health" -TimeoutSec 3
+}
+if ($admin.gateway -or $admin.status -ne 'ok') { throw '8000 不是彤靈主機管理端。' }
+if (-not (Get-Command ngrok -ErrorAction SilentlyContinue)) { throw '找不到 ngrok。請先安裝並設定 ngrok。' }
+
+$gatewayListener = Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($gatewayListener) {
+    $health = Invoke-RestMethod "http://127.0.0.1:$ClientPort/api/health" -TimeoutSec 3
+    if (-not $health.gateway) { throw "連線埠 $ClientPort 不是彤靈受限後端，未更動。" }
+} else {
+    Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', 'client-gateway.cmd') -WorkingDirectory $taskRoot | Out-Null
+    $ready = $false
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $health = Invoke-RestMethod "http://127.0.0.1:$ClientPort/api/health" -TimeoutSec 2
+            if ($health.gateway) { $ready = $true; break }
+        } catch {}
+    }
+    if (-not $ready) { throw '客戶端後端未能啟動，請查看 Client Gateway 8001 視窗。' }
+    $gatewayListener = Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-$env:DATA_DIR = $dataDir
-$env:TONGLING_CLIENT_GATEWAY = '1'
-$gateway = Start-Process -FilePath $python -ArgumentList @('-m','uvicorn','app.main:app','--host','127.0.0.1','--port',"$ClientPort") -WorkingDirectory $backend -WindowStyle Hidden -RedirectStandardOutput (Join-Path $dataDir 'client_gateway.log') -RedirectStandardError (Join-Path $dataDir 'client_gateway.err.log') -PassThru
-$ready = $false
-for ($i=0; $i -lt 15; $i++) {
-    Start-Sleep -Seconds 1
-    try {
-        $health = Invoke-RestMethod "http://127.0.0.1:$ClientPort/api/health" -TimeoutSec 2
-        if ($health.gateway) { $ready = $true; break }
-    } catch {}
-}
-if (-not $ready) {
-    Get-Process -Id $gateway.Id -ErrorAction SilentlyContinue | Stop-Process
-    throw '客戶端服務未能啟動。請檢查 data/client_gateway.err.log。'
+$frontendListener = Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($frontendListener) {
+    $frontendHealth = Invoke-RestMethod "http://127.0.0.1:$FrontendPort/health" -TimeoutSec 3
+    if ($frontendHealth.role -ne 'client') { throw "連線埠 $FrontendPort 不是彤靈客戶端前端，未更動。" }
+} else {
+    Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', 'client-frontend.cmd') -WorkingDirectory $taskRoot | Out-Null
+    $ready = $false
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $frontendHealth = Invoke-RestMethod "http://127.0.0.1:$FrontendPort/health" -TimeoutSec 2
+            if ($frontendHealth.role -eq 'client') { $ready = $true; break }
+        } catch {}
+    }
+    if (-not $ready) { throw '客戶端前端未能啟動，請查看 Client Frontend 8002 視窗。' }
+    $frontendListener = Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-$ngrokProcess = Start-Process -FilePath $ngrok.Source -ArgumentList @('http',"$ClientPort",'--log=stdout') -WorkingDirectory $taskRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $dataDir 'ngrok.log') -RedirectStandardError (Join-Path $dataDir 'ngrok.err.log') -PassThru
+$ngrokListener = Get-NetTCPConnection -LocalPort 4040 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $ngrokListener) {
+    Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', 'client-ngrok.cmd') -WorkingDirectory $taskRoot | Out-Null
+}
 $publicUrl = ''
-for ($i=0; $i -lt 20; $i++) {
-    Start-Sleep -Seconds 1
+for ($i = 0; $i -lt 20; $i++) {
     try {
         $tunnels = Invoke-RestMethod 'http://127.0.0.1:4040/api/tunnels' -TimeoutSec 2
-        $publicUrl = @($tunnels.tunnels | Where-Object { $_.public_url -like 'https://*' } | Select-Object -First 1).public_url
-        if ($publicUrl) { break }
+        $matching = @($tunnels.tunnels | Where-Object {
+            $_.public_url -like 'https://*' -and $_.config.addr -in @("http://localhost:$FrontendPort", "http://127.0.0.1:$FrontendPort")
+        })
+        if ($matching.Count -eq 1) { $publicUrl = $matching[0].public_url; break }
     } catch {}
-    if ($ngrokProcess.HasExited) { break }
+    Start-Sleep -Seconds 1
 }
-if (-not $publicUrl) {
-    $gatewayListener = Get-NetTCPConnection -LocalPort $ClientPort -State Listen -ErrorAction SilentlyContinue
-    if ($gatewayListener) { Stop-Process -Id $gatewayListener.OwningProcess -ErrorAction SilentlyContinue }
-    Get-Process -Id $gateway.Id -ErrorAction SilentlyContinue | Stop-Process
-    Get-Process -Id $ngrokProcess.Id -ErrorAction SilentlyContinue | Stop-Process
-    throw 'ngrok 未能取得公開網址。請先在本機執行 ngrok config add-authtoken，並檢查 data/ngrok.err.log。請勿把權杖貼到對話中。'
-}
+if (-not $publicUrl) { throw 'ngrok 尚未建立指向客戶端前端 8002 的 HTTPS 通道，請查看 ngrok 視窗。' }
 
 [System.IO.File]::WriteAllText($urlFile, $publicUrl, (New-Object System.Text.UTF8Encoding($false)))
-[System.IO.File]::WriteAllText((Join-Path $dataDir 'client_gateway.pid'), "$($gateway.Id)")
-[System.IO.File]::WriteAllText((Join-Path $dataDir 'ngrok.pid'), "$($ngrokProcess.Id)")
+$gatewayProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($gatewayListener.OwningProcess)"
+$gatewayParent = if ($gatewayProcess) { Get-CimInstance Win32_Process -Filter "ProcessId=$($gatewayProcess.ParentProcessId)" }
+$expectedPython = '"' + $python + '"'
+if ($gatewayParent -and $gatewayParent.CommandLine.StartsWith($expectedPython, [System.StringComparison]::OrdinalIgnoreCase) -and
+    $gatewayParent.CommandLine -like "*uvicorn app.main:app*--port $ClientPort*") {
+    [System.IO.File]::WriteAllText((Join-Path $dataDir 'client_gateway.pid'), "$($gatewayParent.ProcessId)")
+}
+$frontendProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($frontendListener.OwningProcess)"
+if ($frontendProcess -and $frontendProcess.Name -eq 'node.exe' -and
+    $frontendProcess.CommandLine -like "*server.mjs client $FrontendPort $ClientPort*") {
+    [System.IO.File]::WriteAllText((Join-Path $dataDir 'client_frontend.pid'), "$($frontendProcess.ProcessId)")
+}
+$ngrokListener = Get-NetTCPConnection -LocalPort 4040 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+$ngrokProcess = if ($ngrokListener) { Get-CimInstance Win32_Process -Filter "ProcessId=$($ngrokListener.OwningProcess)" }
+if ($ngrokProcess -and $ngrokProcess.Name -like 'ngrok*' -and $ngrokProcess.CommandLine -like "*http $FrontendPort*") {
+    [System.IO.File]::WriteAllText((Join-Path $dataDir 'ngrok.pid'), "$($ngrokProcess.ProcessId)")
+}
 $access = Invoke-RestMethod "http://127.0.0.1:$AdminPort/api/admin/client-access"
-Write-Host "客戶端網址：$publicUrl"
+Write-Host "客戶端已啟用：$publicUrl"
 Write-Host "配對碼：$($access.code)（每 10 分鐘更新；也可在彤靈本機設定頁查看）"
-Write-Host '其他人透過此網址配對後，只會看到自己建立的專案。'
+Write-Host '客戶端前端、受限後端與 ngrok 各有一個即時日誌視窗。'

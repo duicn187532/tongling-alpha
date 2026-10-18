@@ -126,6 +126,12 @@ class HttpKnowledgeServerProvider:
         from urllib.parse import quote
         return self._request("GET", "/evidence/" + quote(evidence_id, safe="") + "/metadata")
 
+    def list_documents(self):
+        return self._request("GET", "/documents")
+
+    def rescan(self):
+        return self._request("POST", "/rescan")
+
 
 def _local_hit(hit, scope):
     return {**hit, "source_scope": scope, "source_location": "LOCAL",
