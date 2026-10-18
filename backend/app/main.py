@@ -1375,28 +1375,22 @@ def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
         raise ValueError("AI 工作仍在執行，請等待完成或暫停後再保存決策")
     if (p.state.get("change_analysis") or {}).get("model_status") == "PENDING":
         raise ValueError("AI 正在整理變更提案，請稍候再保存決策")
-    critical = next((q for q in (p.state.get("change_analysis") or {}).get("critical_questions", [])
-                     if q["requirement_id"] == rid), None)
-    if critical and body.action in {"ACCEPT", "MODIFY", "REJECT"} and not body.rationale.strip():
-        raise ValueError("重要變更決策須記錄理由與依據")
-    if body.action in {"MODIFY", "REJECT"} and not body.rationale.strip():
-        raise ValueError("修改或拒絕時須填寫理由")
+    # Adopting or rejecting the AI proposal needs no reason; only a modified
+    # requirement must carry its new wording (the note is optional).
     if body.action == "MODIFY" and not body.statement.strip():
-        raise ValueError("請填入修改後的需求")
+        raise ValueError("請填入修改後的需求，或先請 AI 依你的說明整理")
     if body.action == "PENDING" and body.category == "OPEN_ISSUE" and not body.rationale.strip():
-        raise ValueError("保留待確認時，請填寫原因與待釐清問題")
-    if (
-        r.status in {"CONFLICT", "OPEN"}
-        and body.action == "ACCEPT"
-        and not body.rationale.strip()
-    ):
-        raise ValueError("衝突或待定項目需要決策理由；必要時請修改需求")
+        body.rationale = "PM 保留待確認，列為待決事項"
     if p.state.get("analysis_stale"):
         raise ValueError("請先更新分析，再進行決策")
+    proposal = next((item for item in (p.state.get("change_analysis") or {}).get("proposals", [])
+                      if item["requirement_id"] == rid), {})
+    suggested = (proposal.get("proposed_requirement") or {}).get("statement") or r.statement
     r.decision = {
         **body.model_dump(),
         "category": "SCOPE_EXCLUSION" if r.status == "EXCLUDED" else body.category,
-        "statement": body.statement if body.action == "MODIFY" else r.statement,
+        # Adopting means adopting the AI's formal wording shown on the card.
+        "statement": body.statement if body.action == "MODIFY" else suggested if body.action == "ACCEPT" else r.statement,
         "decided_at": now(),
     }
     project_lifecycle.memory_for_decision(db, r)
@@ -1431,6 +1425,41 @@ def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
     return serialize(r)
 
 
+class RewriteInput(BaseModel):
+    note: str = Field(min_length=1, max_length=1000)
+    statement: str = Field(default="", max_length=2000)
+
+
+class RewrittenRequirement(BaseModel):
+    statement: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/requirements/{rid}/rewrite")
+def rewrite_requirement(rid: str, body: RewriteInput, db=Depends(get_db)):
+    """Turn the PM's change note into formal requirement wording for review.
+    Nothing is saved; the PM confirms the text with a MODIFY decision."""
+    from .model_runtime import structured
+    r = get(db, Requirement, rid)
+    p = get(db, Project, r.project_id)
+    proposal = next((item for item in (p.state.get("change_analysis") or {}).get("proposals", [])
+                     if item["requirement_id"] == rid), {})
+    base = body.statement.strip() or proposal.get("proposed_requirement", {}).get("statement") or r.statement
+    fallback = {"statement": f"{base.rstrip('。')}；{body.note.strip().rstrip('。')}。"}
+    config = {**settings(db), "_project_id": p.id}
+    try:
+        result = structured(
+            config, "CHANGE_PROPOSAL",
+            "你是金融業資深 PM。依 PM 的修改說明改寫一條正式、可驗證的繁體中文需求。"
+            "保留原需求中未被修改的內容，不得新增說明以外的系統、欄位、核准或數值。只回傳 statement。",
+            {"topic": r.topic, "current_requirement": base, "pm_change_note": body.note,
+             "evidence": [f.get("statement", "")[:400] for f in r.evidence[:6]]},
+            RewrittenRequirement, lambda: fallback, timeout_seconds=90, max_tokens=800)
+        return {"statement": result.statement, "method": "RULES" if config.get("provider") == "mock" else "MODEL"}
+    except Exception as exc:
+        return {"statement": fallback["statement"], "method": "RULES",
+                "warning": f"模型整理失敗，已先合併你的說明：{type(exc).__name__}"}
+
+
 @app.post("/api/projects/{pid}/change-analysis/review")
 def review_change_analysis(pid: str, body: ProposalReviewInput, db=Depends(get_db)):
     db.execute(text("BEGIN IMMEDIATE"))
@@ -1453,15 +1482,28 @@ def review_change_analysis(pid: str, body: ProposalReviewInput, db=Depends(get_d
         if questions:
             raise ValueError(f"尚有 {len(questions)} 項關鍵問題待決策；可逐項決策或保留待確認")
         proposals = {item["requirement_id"]: item for item in report["proposals"]}
+        names = {item["requirement_id"]: item["name"] for item in report["proposals"]}
         for row in rows:
             if row.decision.get("action") in {"ACCEPT", "MODIFY", "REJECT", "PENDING"}:
                 continue
             proposal = proposals.get(row.id, {})
-            if proposal.get("status") in {"TRUE_CONFLICT", "UNKNOWN", "UNSUPPORTED"}:
+            status = proposal.get("status")
+            if status in {"TRUE_CONFLICT", "UNSUPPORTED"}:
                 continue
-            row.decision = {"action": "ACCEPT", "statement": proposal.get("proposed_requirement", {}).get("statement") or row.statement,
-                            "rationale": "PM 整體審閱變更提案；此項納入 PRD 草稿，尚非正式業務基準。",
-                            "decided_at": now(), "decided_by": "PM_PROPOSAL_REVIEW"}
+            decided = {"decided_at": now(), "decided_by": "PM_PROPOSAL_REVIEW"}
+            if proposal.get("duplicate_of"):
+                row.decision = {"action": "REJECT", "category": "FUNCTIONAL", "statement": row.statement,
+                                "rationale": f"與「{names.get(proposal['duplicate_of'], '其他提案')}」重複，已合併", **decided}
+            elif status == "CONTEXT":
+                row.decision = {"action": "ACCEPT", "category": "DECISION_CONTEXT", "statement": row.statement,
+                                "rationale": "現行規範，作為本次需求的背景依據", **decided}
+            elif status == "UNKNOWN":
+                row.decision = {"action": "PENDING", "category": "OPEN_ISSUE", "statement": row.statement,
+                                "rationale": "資訊不足，列為待決事項", **decided}
+            else:
+                row.decision = {"action": "ACCEPT", "category": "FUNCTIONAL",
+                                "statement": proposal.get("proposed_requirement", {}).get("statement") or row.statement,
+                                "rationale": "PM 整體審閱變更提案；此項納入 PRD 草稿，尚非正式業務基準。", **decided}
         p.state = {**p.state, "change_review": {"status": "APPROVED", "fingerprint": body.fingerprint,
                                                  "rationale": body.rationale, "reviewed_at": now()}, "draft_id": None}
         resolve_interruptions(db, p, ["REQUIREMENT_REVIEW"])

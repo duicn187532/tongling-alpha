@@ -339,14 +339,9 @@ def test_epoch_cancels_stale_worker(client, project, monkeypatch):
     assert p["runtime"] == "PAUSED" and not p["requirements"]
 
 
-def test_lan_auth_and_csrf(client, monkeypatch):
-    import app.main as main
-
-    monkeypatch.setattr(main, "LAN", True)
-    assert client.get("/api/projects").status_code == 401
-    assert client.post("/api/pair", json={"code": "wrong"}).status_code == 401
-    assert client.post("/api/pair", json={"code": main.PAIR_CODE}).status_code == 200
-    assert client.get("/api/projects").status_code == 200
+def test_host_rejects_cross_origin_writes_and_pairing(client):
+    # The host process is loopback-only; remote access goes through the gateway.
+    assert client.post("/api/pair", json={"code": "wrong"}).status_code == 404
     assert (
         client.post(
             "/api/projects",
@@ -355,8 +350,7 @@ def test_lan_auth_and_csrf(client, monkeypatch):
         ).status_code
         == 403
     )
-    assert client.post("/api/logout").status_code == 200
-    assert client.get("/api/projects").status_code == 401
+    assert client.get("/api/projects", headers={"host": "192.168.1.5:8000"}).status_code == 400
 
 
 def test_no_change_keeps_baseline_and_source_trace(

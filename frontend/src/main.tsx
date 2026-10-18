@@ -68,6 +68,10 @@ const statusLabels: Record<string, string> = {
   UNSUPPORTED: "目前不支援",
   UNKNOWN: "待確認",
   TRUE_CONFLICT: "有效規範衝突",
+  CONTEXT: "現行規範（背景）",
+  HIGH_RISK_CHANGE: "放寬控制",
+  TECHNICAL_UNSUPPORTED: "技術不支援",
+  KEY_INFORMATION_MISSING: "缺關鍵資訊",
   APPLIED: "已套用",
   NO_PRD_CHANGE: "無須改版",
   CANCELLED: "已取消",
@@ -110,6 +114,7 @@ function ReviewCard({
   sourceButton,
   blockedReason,
   criticalReason,
+  proposal,
 }: {
   row: any;
   busy: boolean;
@@ -117,87 +122,27 @@ function ReviewCard({
   sourceButton: (id: string) => React.ReactNode;
   blockedReason: string;
   criticalReason?: string;
+  proposal?: any;
 }) {
-  const [statement, setStatement] = useState(
-      row.decision.statement || row.statement,
-    ),
-    [rationale, setRationale] = useState(row.decision.rationale || ""),
-    [category, setCategory] = useState(row.status === "EXCLUDED" ? "SCOPE_EXCLUSION" : row.decision.category || "FUNCTIONAL");
-  const [saved, setSaved] = useState(row.decision);
+  const suggestion = proposal?.proposed_requirement?.statement || row.statement;
+  const [editing, setEditing] = useState(false);
+  const [statement, setStatement] = useState(row.decision.statement || suggestion);
+  const [note, setNote] = useState("");
+  const [category, setCategory] = useState(row.status === "EXCLUDED" ? "SCOPE_EXCLUSION" : row.decision.category || "FUNCTIONAL");
   const [saving, setSaving] = useState("");
-  const [feedback, setFeedback] = useState<{
-    error: boolean;
-    text: string;
-  } | null>(null);
-  const persisted = JSON.stringify(row.decision);
-  useEffect(() => {
-    const decision = JSON.parse(persisted);
-    setSaved(decision);
-    setStatement(decision.statement || row.statement);
-    setRationale(decision.rationale || "");
-    setCategory(row.status === "EXCLUDED" ? "SCOPE_EXCLUSION" : decision.category || "FUNCTIONAL");
-    setFeedback(
-      decision.decided_at
-        ? {
-            error: false,
-            text:
-              decision.action === "PENDING"
-                ? "已保存為待確認；選擇「待決事項」並填寫理由，可先列入 PRD 草稿。"
-                : "✓ 決策已保存，本項人工確認完成。",
-          }
-        : null,
-    );
-  }, [persisted, row.statement]);
-  const decisionLabels: Record<string, string> = {
-    ACCEPT: "已接受",
-    MODIFY: "已採用修改",
-    REJECT: "已拒絕",
-    PENDING: "待確認",
-  };
+  const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const saved = row.decision || {};
+  const decisionLabels: Record<string, string> = { ACCEPT: "已採納", MODIFY: "已修改採納", REJECT: "已拒絕", PENDING: "待確認" };
   const currentAction = saved.action || "UNDECIDED";
-  const edited =
-    statement !== (saved.statement || row.statement) ||
-    rationale !== (saved.rationale || "") ||
-    category !== (row.status === "EXCLUDED" ? "SCOPE_EXCLUSION" : saved.category || "FUNCTIONAL");
-  async function saveDecision(action: string) {
-    const invalid =
-      blockedReason ||
-      ((action === "MODIFY" ||
-        action === "REJECT" ||
-        (!!criticalReason && action === "ACCEPT") ||
-        (action === "PENDING" && category === "OPEN_ISSUE") ||
-        (action === "ACCEPT" && ["CONFLICT", "OPEN"].includes(row.status))) &&
-      !rationale.trim()
-        ? "請先填寫決策理由，再保存此決策。"
-        : "") ||
-      (action === "MODIFY" && !statement.trim()
-        ? "請先填寫修改後的需求。"
-        : "");
-    if (invalid) {
-      setFeedback({ error: true, text: invalid });
-      return;
-    }
+  async function save(action: string, extra: Record<string, string> = {}) {
+    if (blockedReason) { setFeedback({ error: true, text: blockedReason }); return; }
     setSaving(action);
     setFeedback(null);
     await act(async () => {
       try {
-        const result = await api(`/requirements/${row.id}/decision`, "PUT", {
-          action,
-          statement,
-          rationale,
-          category,
-        });
-        setSaved(result.decision);
-        setStatement(result.decision.statement);
-        setRationale(result.decision.rationale || "");
-        setCategory(result.decision.category || "FUNCTIONAL");
-        setFeedback({
-          error: false,
-          text:
-            action === "PENDING"
-              ? "已保存為待確認；選擇「待決事項」並填寫理由，可先列入 PRD 草稿。"
-              : `✓ 保存成功：${decisionLabels[action]}。`,
-        });
+        await api(`/requirements/${row.id}/decision`, "PUT", { action, category, ...extra });
+        setEditing(false);
+        setFeedback({ error: false, text: `✓ ${decisionLabels[action]}` });
       } catch (e) {
         setFeedback({ error: true, text: `保存失敗：${(e as Error).message}` });
         throw e;
@@ -206,107 +151,76 @@ function ReviewCard({
       }
     });
   }
+  async function organize() {
+    if (!note.trim()) { setFeedback({ error: true, text: "請先寫下你想怎麼改。" }); return; }
+    setSaving("REWRITE");
+    setFeedback(null);
+    try {
+      const result = await api(`/requirements/${row.id}/rewrite`, "POST", { note, statement });
+      setStatement(result.statement);
+      setFeedback({ error: false, text: result.warning || (result.method === "MODEL" ? "AI 已整理，請確認後保存。" : "已合併你的說明，請確認後保存。") });
+    } catch (e) {
+      setFeedback({ error: true, text: (e as Error).message });
+    } finally {
+      setSaving("");
+    }
+  }
+  const disabled = busy || !!saving || !!blockedReason;
   return (
-    <article
-      className={`card requirement decision-${currentAction.toLowerCase()}`}
-      aria-busy={!!saving}
-    >
+    <article className={`card requirement decision-${currentAction.toLowerCase()}`} aria-busy={!!saving}>
       <div className="row">
-        <span className="decision-badge">
-          {decisionLabels[currentAction] || "尚未決策"}
-        </span>
-        <small>來源判讀：{label(row.status)}</small>
+        <span className="decision-badge">{decisionLabels[currentAction] || "尚未決策"}</span>
+        {proposal && <span className={`badge change-${String(proposal.status).toLowerCase()}`}>{label(proposal.status)}</span>}
+        {criticalReason && <span className="badge change-true_conflict">{label(criticalReason)}</span>}
       </div>
       <h3>{row.topic}</h3>
-      <p>{saved.action === "MODIFY" ? saved.statement : row.statement}</p>
-      {saved.decided_at && (
-        <p className="decision-saved">
-          已保存 · {new Date(saved.decided_at).toLocaleString()}{" "}
-          {saved.action === "REJECT"
-            ? "· 此需求不納入 PRD"
-            : saved.action === "PENDING"
-              ? "· 仍需完成決策"
-              : "· 本項人工確認完成"}
-        </p>
-      )}
+      {proposal && proposal.current_state && proposal.status !== "ADD" && <p className="muted"><strong>現況：</strong>{proposal.current_state}</p>}
+      <p><strong>{saved.action === "MODIFY" ? "修改後需求：" : "AI 建議需求："}</strong>{saved.action === "MODIFY" ? saved.statement : suggestion}</p>
+      {saved.action === "MODIFY" && saved.rationale && <p className="muted">修改說明：{saved.rationale}</p>}
       <details>
-        <summary>來源比較 · {row.evidence.length} 筆證據</summary>
+        <summary>依據 · {row.evidence.length} 筆</summary>
         {row.evidence.map((f: any, i: number) => (
           <div className="evidence" key={i}>
-            <small>
-              {f.meeting_date || "文件來源"} · {f.validity || f.kind}
-            </small>
+            <small>{f.meeting_date || "文件來源"} · {f.validity || f.kind}</small>
             <p>{f.statement}</p>
-            {(f.subject || f.condition || f.effective_at) && <small>主體：{f.subject || row.topic} · 條件：{f.condition || "一般"} · 生效：{f.effective_at || "未載明"}</small>}
             {f.conflict_reason && <p className="execution-warning">{f.conflict_reason}；請對照雙方原文與來源。</p>}
             {sourceButton(f.source_id)}
           </div>
         ))}
       </details>
-      <label>
-        修改後的需求
-        <textarea
-          value={statement}
-          onChange={(e) => setStatement(e.target.value)}
-        />
-      </label>
-      <label>
-        PRD 內容類型
-        <select value={category} disabled={row.status === "EXCLUDED"} onChange={(e) => setCategory(e.target.value)}>
-          <option value="FUNCTIONAL">功能需求</option>
-          <option value="BUSINESS_RULE">商業規則</option>
-          <option value="OPEN_ISSUE">待決事項</option>
-          <option value="DECISION_CONTEXT">決策背景、時程或分工</option>
-          <option value="SCOPE_EXCLUSION">排除範圍</option>
-        </select>
-      </label>
-      <small>{row.status === "EXCLUDED" ? "來源已明確標示為排除範圍；如判讀錯誤，請修正來源並重新分析。" : "請依來源與實際決策分類。時程、分工與舊規則不應列為本次功能需求。"}</small>
-      <label>
-        決策理由
-        <input
-          value={rationale}
-          onChange={(e) => setRationale(e.target.value)}
-          placeholder="修改、拒絕或處理衝突時必填"
-        />
-      </label>
+      {editing && <div className="modify-panel">
+        <label>你想怎麼改？（AI 會依此整理成正式需求）
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：附件密碼改以簡訊另送，不放在同一封信" />
+        </label>
+        <div className="actions">
+          <button disabled={disabled || !note.trim()} onClick={() => void organize()}>{saving === "REWRITE" ? "整理中…" : "請 AI 整理"}</button>
+        </div>
+        <label>修改後的需求
+          <textarea value={statement} onChange={(e) => setStatement(e.target.value)} />
+        </label>
+        <label>PRD 內容類型
+          <select value={category} disabled={row.status === "EXCLUDED"} onChange={(e) => setCategory(e.target.value)}>
+            <option value="FUNCTIONAL">功能需求</option>
+            <option value="BUSINESS_RULE">商業規則</option>
+            <option value="OPEN_ISSUE">待決事項</option>
+            <option value="DECISION_CONTEXT">決策背景、時程或分工</option>
+            <option value="SCOPE_EXCLUSION">排除範圍</option>
+          </select>
+        </label>
+        <div className="actions">
+          <button className="primary" disabled={disabled || !statement.trim()} onClick={() => void save("MODIFY", { statement, rationale: note })}>保存修改</button>
+          <button disabled={!!saving} onClick={() => setEditing(false)}>取消</button>
+        </div>
+      </div>}
       {blockedReason && <p className="feedback warning">{blockedReason}</p>}
-      {edited && !saving && (
-        <p className="decision-unsaved">
-          內容或分類有未保存的變更；修改文字請按「採用修改」，僅調整分類可重新按目前決策。
-        </p>
-      )}
-      {saving && (
-        <p role="status" className="feedback loading">
-          <span className="spinner" />
-          正在保存「{decisionLabels[saving]}」…
-        </p>
-      )}
-      {feedback && !saving && (
-        <p
-          role={feedback.error ? "alert" : "status"}
-          className={`feedback ${feedback.error ? "warning" : "success"}`}
-        >
-          {feedback.text}
-        </p>
-      )}
-      <div className="actions">
-        {[
-          ["ACCEPT", "接受"],
-          ["MODIFY", "採用修改"],
-          ["REJECT", "拒絕"],
-          ["PENDING", "待確認"],
-        ].map(([action, title]) => (
-          <button
-            key={action}
-            disabled={busy || !!saving || !!blockedReason}
-            aria-pressed={currentAction === action}
-            className={`decision-button choice-${action.toLowerCase()} ${currentAction === action ? "selected" : ""}`}
-            onClick={() => saveDecision(action)}
-          >
-            {title}
-          </button>
-        ))}
-      </div>
+      {saving && saving !== "REWRITE" && <p role="status" className="feedback loading"><span className="spinner" />正在保存…</p>}
+      {feedback && !saving && <p role={feedback.error ? "alert" : "status"} className={`feedback ${feedback.error ? "warning" : "success"}`}>{feedback.text}</p>}
+      {!editing && <div className="actions">
+        <button disabled={disabled} aria-pressed={currentAction === "ACCEPT"} className={`decision-button choice-accept ${currentAction === "ACCEPT" ? "selected" : ""}`} onClick={() => void save("ACCEPT")}>採納</button>
+        <button disabled={disabled} aria-pressed={currentAction === "MODIFY"} className={`decision-button choice-modify ${currentAction === "MODIFY" ? "selected" : ""}`} onClick={() => { setStatement(saved.action === "MODIFY" ? saved.statement : suggestion); setEditing(true); }}>修改…</button>
+        <button disabled={disabled} aria-pressed={currentAction === "REJECT"} className={`decision-button choice-reject ${currentAction === "REJECT" ? "selected" : ""}`} onClick={() => void save("REJECT")}>拒絕</button>
+        <button disabled={disabled} aria-pressed={currentAction === "PENDING"} className={`decision-button choice-pending ${currentAction === "PENDING" ? "selected" : ""}`} onClick={() => void save("PENDING", { category: "OPEN_ISSUE" })}>稍後確認</button>
+      </div>}
     </article>
   );
 }
@@ -1577,7 +1491,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
             {project.state.change_analysis.model_status === "PENDING" && <p className="feedback loading" role="status">AI 正在撰寫正式需求與驗收建議，請稍候…</p>}
             {project.state.change_analysis.model_status === "ERROR" && <p className="feedback warning">模型提案未完成，已保留有證據的基礎分析：{project.state.change_analysis.model_error}</p>}
             <div className="change-report-grid">
-              {project.state.change_analysis.proposals.map((item: any) => <details className="change-proposal" key={item.requirement_id}>
+              {project.state.change_analysis.proposals.filter((item: any) => item.needs_review ?? true).map((item: any) => <details className="change-proposal" key={item.requirement_id}>
                 <summary><span className={`badge change-${item.status.toLowerCase()}`}>{label(item.status)}</span> {item.name}</summary>
                 <p><strong>Before：</strong>{item.current_state}</p>
                 <p><strong>After：</strong>{item.target_state}</p>
@@ -1598,7 +1512,11 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 </div>)}</details>
               </details>)}
             </div>
-            {!!project.state.change_analysis.critical_questions.length && <p className="execution-warning">有 {project.state.change_analysis.critical_questions.length} 項重要問題，請到「提案審閱」決策。</p>}
+            {project.state.change_analysis.proposals.some((item: any) => item.needs_review === false) && <details>
+              <summary>其餘 {project.state.change_analysis.proposals.filter((item: any) => item.needs_review === false).length} 項無需處理（現行規範、已符合或重複）</summary>
+              {project.state.change_analysis.proposals.filter((item: any) => item.needs_review === false).map((item: any) => <p key={item.requirement_id}><span className="badge">{label(item.status)}</span> {item.name}：{item.duplicate_of ? "與其他提案重複，已合併" : item.target_state || item.current_state}</p>)}
+            </details>}
+            {!!project.state.change_analysis.critical_questions.length && <p className="execution-warning">有 {project.state.change_analysis.critical_questions.length} 項須明確決策，請到「提案審閱」處理。</p>}
             <button className="primary" onClick={() => setPage(6)}>審閱整體提案</button>
           </section>}
           <details className="card"><summary>詳細資訊：原始來源比對矩陣與證據</summary>
@@ -1646,43 +1564,48 @@ function App({ isClient = false }: { isClient?: boolean }) {
     if (page === 6 && project.state.change_analysis) {
       const report = project.state.change_analysis;
       const reviewed = project.state.change_review?.status === "APPROVED" && project.state.change_review?.fingerprint === report.fingerprint;
-      const critical = new Set(report.critical_questions.map((item: any) => item.requirement_id));
-      const unresolved = report.critical_questions.filter((item: any) => {
-        const row = project.requirements.find((r: any) => r.id === item.requirement_id);
-        return !["ACCEPT", "MODIFY", "REJECT"].includes(row?.decision?.action) &&
-          !(row?.decision?.action === "PENDING" && row?.decision?.category === "OPEN_ISSUE" && row?.decision?.rationale);
-      });
+      const toReview = report.proposals.filter((item: any) => item.needs_review ?? true);
+      const others = report.proposals.filter((item: any) => !(item.needs_review ?? true));
+      const names: Record<string, string> = Object.fromEntries(report.proposals.map((item: any) => [item.requirement_id, item.name]));
+      const decided = (row: any) => ["ACCEPT", "MODIFY", "REJECT"].includes(row?.decision?.action) ||
+        (row?.decision?.action === "PENDING" && row?.decision?.category === "OPEN_ISSUE" && row?.decision?.rationale);
+      const unresolved = report.critical_questions.filter((item: any) =>
+        !decided(project.requirements.find((r: any) => r.id === item.requirement_id)));
+      const open = toReview.filter((item: any) => !decided(project.requirements.find((r: any) => r.id === item.requirement_id)));
+      const blockedReason = project.state.analysis_stale ? "來源已變更，請先更新分析。" : project.runtime === "RUNNING" || report.model_status === "PENDING" ? "AI 工作執行中，請稍候。" : "";
       return <>
-        <h2>審閱整體變更提案</h2>
-        <p>AI 已整理明確且有來源的內容。你只需處理重要問題，並確認整體草案；正式 PRD 定版另需核准。</p>
+        <h2>審閱變更提案</h2>
+        <p>只列出需要你判斷的項目。採納或拒絕不需要填理由；想修改時寫下你的想法，AI 會整理成正式需求。</p>
         <div className="card review-summary">
-          <strong>{report.proposals.length} 項提案 · {unresolved.length} 項待決問題</strong>
-          <p>{reviewed ? "✓ 整體提案已審閱，可產生 PRD 草稿。" : "提案尚未整體審閱。"}</p>
+          <strong>{toReview.length} 項需審閱 · 尚未處理 {open.length} 項{unresolved.length ? ` · ${unresolved.length} 項須先決策` : ""}</strong>
+          <p>{reviewed ? "✓ 整體提案已審閱，可產生 PRD 草稿。" : unresolved.length
+            ? "請先處理標示「須決策」的項目，其餘可一次接受。"
+            : "按「接受整體提案」：未逐項處理的提案依 AI 建議納入，現行規範列為背景，資訊不足者列為待決事項。"}</p>
           <div className="actions">
-            <button className="primary" disabled={busy || project.runtime === "RUNNING" || project.state.analysis_stale || !!unresolved.length || report.model_status === "PENDING"}
-              onClick={() => act(() => api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint}))}>
+            <button className="primary" disabled={busy || !!blockedReason || !!unresolved.length || reviewed}
+              onClick={() => act(() => api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint}), "已接受整體提案")}>
               接受整體提案並納入草稿
             </button>
-            <button disabled={busy} onClick={() => act(() => api(`/projects/${pid}/change-analysis/review`, "POST", {action: "DEFER", fingerprint: report.fingerprint}))}>保留待確認</button>
-            <button className="primary" disabled={busy || !reviewed || !!unresolved.length} onClick={() => act(async () => {
+            <button className={reviewed ? "primary" : ""} disabled={busy || !reviewed || !!unresolved.length} onClick={() => act(async () => {
               await queueAndWait("PRD", { project_id: pid }); setPage(8);
             })}>產生待審閱 PRD</button>
           </div>
         </div>
-        {report.critical_questions.map((item: any) => <section key={item.requirement_id}>
-          <div className="card"><h3>{item.topic} · {label(item.reason)}</h3><p>{item.question}</p>
-            {!!item.options.length && <p>可比較選項：{item.options.join("／")}</p>}
-          </div>
-          {project.requirements.filter((r: any) => r.id === item.requirement_id).map((r: any) => <ReviewCard key={r.id}
-            row={r} busy={busy} act={act} sourceButton={sourceButton}
-            criticalReason={item.reason}
-            blockedReason={project.state.analysis_stale ? "來源已變更，請先更新分析。" : project.runtime === "RUNNING" || report.model_status === "PENDING" ? "AI 工作執行中，請稍候。" : ""}/>) }
-        </section>)}
-        <details className="card"><summary>查看全部 {report.proposals.length} 項提案與逐項調整</summary>
-          {project.requirements.filter((r: any) => !critical.has(r.id)).map((r: any) => <ReviewCard key={r.id}
-            row={r} busy={busy} act={act} sourceButton={sourceButton}
-            blockedReason={project.state.analysis_stale ? "來源已變更，請先更新分析。" : project.runtime === "RUNNING" || report.model_status === "PENDING" ? "AI 工作執行中，請稍候。" : ""}/>) }
-        </details>
+        {toReview.length === 0 && <p className="feedback success">沒有需要你判斷的變更；可直接接受整體提案。</p>}
+        {toReview.map((item: any) => {
+          const row = project.requirements.find((r: any) => r.id === item.requirement_id);
+          const question = report.critical_questions.find((q: any) => q.requirement_id === item.requirement_id);
+          if (!row) return null;
+          return <section key={item.requirement_id}>
+            {question && <p className="execution-warning">須決策：{question.question}{question.options?.length ? `（可比較：${question.options.join("／")}）` : ""}</p>}
+            <ReviewCard row={row} proposal={item} busy={busy} act={act} sourceButton={sourceButton}
+              criticalReason={question?.reason} blockedReason={blockedReason} />
+          </section>;
+        })}
+        {others.length > 0 && <details className="card"><summary>無需處理的 {others.length} 項（現行規範、已符合或重複）</summary>
+          {others.map((item: any) => <p key={item.requirement_id}><span className="badge">{label(item.status)}</span> {item.name}：
+            {item.duplicate_of ? `與「${names[item.duplicate_of] || "其他提案"}」重複，已合併` : item.target_state || item.current_state}</p>)}
+        </details>}
       </>;
     }
     if (page === 6)

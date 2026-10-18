@@ -16,17 +16,19 @@ def claim(topic, statement, *, value="", condition="", kind="REQUIREMENT"):
 def test_requested_change_is_delta_and_technical_unknown(client, project):
     with Session.begin() as db:
         p = db.get(Project, project["id"])
-        old = ingest(db, "已核准驗證規範", [{"text": "現行採實體憑證"}], kind="INTERNAL_POLICY", project=p)
+        old = ingest(db, "已核准驗證規範", [{"text": "現行採實體憑證並加密傳輸"}], kind="INTERNAL_POLICY", project=p)
         goal = ingest(db, "本次需求", [{"text": "改用推播驗證"}], kind="REQUIREMENT_TEXT", project=p)
         db.flush()
-        apply_analysis(db, p, {old.id: [claim("登入驗證", "現行採實體憑證")],
+        apply_analysis(db, p, {old.id: [claim("登入驗證", "現行採實體憑證並加密傳輸")],
                                goal.id: [claim("登入驗證", "改用推播驗證", kind="CHANGE")]})
         row = db.scalar(select(Requirement).where(Requirement.project_id == p.id, Requirement.topic == "登入驗證"))
         report = p.state["change_analysis"]
-        proposal = report["proposals"][0]
+        proposal = next(item for item in report["proposals"] if item["name"] == "登入驗證")
         assert row.status != "CONFLICT"
         assert proposal["status"] == "MODIFY"
-        assert proposal["current_state"] == "現行採實體憑證"
+        # Dropping an existing control (加密) is the risk that needs a decision.
+        assert proposal["priority"] == "HIGH"
+        assert proposal["current_state"] == "現行採實體憑證並加密傳輸"
         assert proposal["target_state"] == "改用推播驗證"
         assert proposal["impact_analysis"]["technical"][0]["status"] == "SA_CONFIRMATION_REQUIRED"
         assert report["critical_questions"][0]["reason"] == "HIGH_RISK_CHANGE"
@@ -45,7 +47,45 @@ def test_requested_change_is_delta_and_technical_unknown(client, project):
     content = draft.json()["content"]
     assert content["change_scope"][0]["action"] == "MODIFY"
     assert content["it_impact"][0]["status"] == "OPEN"
-    assert content["change_analysis"]["proposals"][0]["status"] == "MODIFY"
+    assert any(item["status"] == "MODIFY" for item in content["change_analysis"]["proposals"])
+
+
+def test_report_converges_to_items_that_need_a_decision(client, project):
+    with Session.begin() as db:
+        p = db.get(Project, project["id"])
+        policy = ingest(db, "通知規範", [{"text": "通知須遮蔽帳號；保存一年"}], kind="INTERNAL_POLICY", project=p)
+        goal = ingest(db, "撥薪通知需求", [{"text": "通知改為加密附件"}], kind="REQUIREMENT_TEXT", project=p)
+        dup = ingest(db, "會議補充", [{"text": "通知改為加密附件。"}], kind="MEETING_RECORD", project=p)
+        db.flush()
+        apply_analysis(db, p, {
+            policy.id: [claim("帳號遮蔽", "通知須遮蔽帳號"), claim("保存期限", "通知紀錄保存一年"),
+                        claim("通知格式", "現行以明文 email 通知")],
+            goal.id: [claim("通知格式", "通知改為加密附件", kind="CHANGE")],
+            dup.id: [claim("附件加密", "通知改為加密附件。", kind="CHANGE")]})
+        report = p.state["change_analysis"]
+        by_name = {item["name"]: item for item in report["proposals"]}
+        # Current rules nobody asked to change are background, not proposals.
+        assert by_name["帳號遮蔽"]["status"] == "CONTEXT" and not by_name["帳號遮蔽"]["needs_review"]
+        assert by_name["保存期限"]["status"] == "CONTEXT"
+        # Adding encryption strengthens a control: a normal proposal, not a forced question.
+        assert by_name["通知格式"]["status"] == "MODIFY" and by_name["通知格式"]["priority"] == "NORMAL"
+        assert by_name["附件加密"]["duplicate_of"] == by_name["通知格式"]["requirement_id"]
+        assert report["critical_questions"] == []
+        assert "1 項需要審閱" in report["summary"]
+        fingerprint = report["fingerprint"]
+        target = by_name["通知格式"]["requirement_id"]
+    # Adopt or reject without a reason; modifying asks AI to word the note.
+    assert client.put(f"/api/requirements/{target}/decision", json={"action": "REJECT"}).status_code == 200
+    assert client.put(f"/api/requirements/{target}/decision", json={"action": "ACCEPT"}).status_code == 200
+    rewritten = client.post(f"/api/requirements/{target}/rewrite", json={"note": "附件密碼以簡訊另送"})
+    assert rewritten.status_code == 200 and "簡訊" in rewritten.json()["statement"]
+    assert client.put(f"/api/requirements/{target}/decision", json={"action": "MODIFY"}).status_code == 422
+    reviewed = client.post(f"/api/projects/{project['id']}/change-analysis/review",
+                           json={"action": "APPROVE", "fingerprint": fingerprint})
+    assert reviewed.status_code == 200, reviewed.text
+    decisions = {r["topic"]: r["decision"] for r in reviewed.json()["requirements"]}
+    assert decisions["帳號遮蔽"]["category"] == "DECISION_CONTEXT"
+    assert decisions["附件加密"]["action"] == "REJECT"
 
 
 def test_true_conflict_requires_choice_and_conditions_do_not(client, project):

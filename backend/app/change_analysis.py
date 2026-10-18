@@ -15,7 +15,10 @@ from .db import Requirement, Source, Workspace
 
 
 CURRENT_KINDS = {"INTERNAL_POLICY", "TECH_SPEC", "BUSINESS_KNOWLEDGE"}
-TARGET_KINDS = {"REQUIREMENT_TEXT", "MEETING_RECORD"}
+TARGET_KINDS = {"REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT", "MEETING_RECORD"}
+RISK = re.compile(r"法遵|個資|資安|安全|加密|授權|風險|驗證|限額|遮蔽|稽核")
+# Only these need a PM decision; the rest are background or already true.
+REVIEW_STATUSES = {"ADD", "MODIFY", "REMOVE", "TRUE_CONFLICT", "UNSUPPORTED", "UNKNOWN"}
 TECHNICAL_KINDS = {"TECH_SPEC"}
 DECISIONS = {"ACCEPT", "MODIFY", "REJECT"}
 
@@ -85,22 +88,24 @@ def build_report(db, project):
                  for b, _ in authoritative[i + 1:] if contradiction(a, b)]
         before = "；".join(dict.fromkeys(f["statement"] for f, _ in current)) or "現況缺少直接證據，待確認"
         after = "；".join(dict.fromkeys(f["statement"] for f, _ in target)) or row.statement
+        has_open = any(f.get("kind") in {"OPEN_ITEM", "QUESTION"} for f, _ in target + ambiguous)
         if pairs:
             status = "TRUE_CONFLICT"
+        elif not target and not ambiguous:
+            # Only current rules mention this topic: nobody asked to change it.
+            status = "CONTEXT"
         elif row.status == "EXCLUDED" or any(f.get("kind") == "EXCLUDED" for f, _ in target):
             status = "REMOVE"
         elif technical and any(re.search(r"不支援|無法提供|未建置|不存在", f.get("statement", ""))
                                for f, _ in technical) and not re.search(r"不支援|不需要", after):
             status = "UNSUPPORTED"
-        elif not target and not ambiguous:
-            status = "UNKNOWN"
         elif not current:
             status = "UNKNOWN" if not target else "ADD"
         elif normal(before) == normal(after) or any(normal(f["statement"]) == normal(after) for f, _ in current):
             status = "ALREADY_SUPPORTED"
         else:
             status = "MODIFY"
-        if row.status == "OPEN" and status not in {"TRUE_CONFLICT", "REMOVE"}:
+        if row.status == "OPEN" and has_open and status not in {"TRUE_CONFLICT", "REMOVE", "CONTEXT"}:
             status = "UNKNOWN"
         references = [_reference(f, s) for f, s in evidence]
         direct = bool(target or ambiguous)
@@ -120,20 +125,23 @@ def build_report(db, project):
             uncertainty.append("技術來源顯示現行能力不足，須由 SA 確認實作方案")
         if status == "UNKNOWN":
             uncertainty.append("需求或適用條件不足，待補充後重新判讀")
+        weakened = sorted(set(RISK.findall(before)) - set(RISK.findall(after)))
         if status == "TRUE_CONFLICT":
             question = f"{row.topic} 的有效正式規範互斥；請確認採用哪一項，或保留待確認。"
             critical.append({"requirement_id": row.id, "topic": row.topic, "reason": "TRUE_CONFLICT",
                              "question": question, "options": [a["statement"] for pair in pairs for a in pair],
                              "source_refs": sorted({s.id for _, s in authoritative})})
-        elif status == "UNKNOWN":
+        elif status == "UNKNOWN" and has_open:
             critical.append({"requirement_id": row.id, "topic": row.topic, "reason": "KEY_INFORMATION_MISSING",
                              "question": f"{row.topic} 尚缺明確目標或關鍵證據；請補充或保留待確認。",
                              "options": [], "source_refs": sorted({f.get("source_id") for f in row.evidence if f.get("source_id")})})
-        elif status == "UNSUPPORTED" or (status in {"MODIFY", "REMOVE"} and
-                re.search(r"法遵|個資|資安|安全|加密|授權|風險|驗證|限額", before + after)):
+        elif status == "UNSUPPORTED" or (status in {"MODIFY", "REMOVE"} and current and weakened):
+            # Strengthening a control is a normal proposal; removing or weakening
+            # one (e.g. encryption, masking) needs an explicit decision.
             reason = "TECHNICAL_UNSUPPORTED" if status == "UNSUPPORTED" else "HIGH_RISK_CHANGE"
             critical.append({"requirement_id": row.id, "topic": row.topic, "reason": reason,
-                             "question": f"{row.topic} 涉及重大技術或風險變更；請確認方案、風險及待補證據。",
+                             "question": (f"{row.topic} 現行能力不足；請確認實作方案。" if status == "UNSUPPORTED"
+                                          else f"{row.topic} 的變更會移除或放寬「{'、'.join(weakened)}」控制；請確認是否接受此風險。"),
                              "options": [], "source_refs": sorted({f.get("source_id") for f in row.evidence if f.get("source_id")})})
         proposal = {"requirement_id": row.id, "name": row.topic, "purpose": project.description or row.topic,
                     "status": status, "current_state": before, "target_state": after,
@@ -151,11 +159,29 @@ def build_report(db, project):
                     "risks": uncertainty, "alternatives": [],
                     "decision": row.decision}
         proposals.append(proposal)
+    # Fold proposals asking for the same target into the first one.
+    critical_ids = {q["requirement_id"] for q in critical}
+    kept = []
+    for proposal in proposals:
+        duplicate = next((other for other in kept if proposal["status"] in REVIEW_STATUSES
+                          and SequenceMatcher(None, normal(other["target_state"]), normal(proposal["target_state"])).ratio() >= 0.9),
+                         None)
+        proposal["duplicate_of"] = duplicate["requirement_id"] if duplicate and proposal["requirement_id"] not in critical_ids else None
+        proposal["needs_review"] = proposal["status"] in REVIEW_STATUSES and not proposal["duplicate_of"]
+        proposal["priority"] = ("HIGH" if proposal["requirement_id"] in critical_ids else
+                                "NORMAL" if proposal["needs_review"] and proposal["status"] != "UNKNOWN" else
+                                "LOW" if proposal["needs_review"] else "NONE")
+        if proposal["needs_review"]:
+            kept.append(proposal)
+    rank = {"HIGH": 0, "NORMAL": 1, "LOW": 2, "NONE": 3}
+    proposals.sort(key=lambda item: (rank[item["priority"]], item["name"]))
+    review_count = sum(p["needs_review"] for p in proposals)
     fingerprint = hashlib.sha256(json.dumps(
         [(p["requirement_id"], p["status"], normal(p["current_state"]), normal(p["target_state"]),
           p["evidence_uncertainty"]["support"]) for p in proposals],
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    return {"version": 1, "goal": project.description, "summary": f"分析 {len(proposals)} 項變更提案，{len(critical)} 項關鍵問題待決策。",
+    return {"version": 1, "goal": project.description, "summary": (f"{review_count} 項需要審閱（其中 {len(critical)} 項須明確決策），"
+                f"{len(proposals) - review_count} 項為現行規範、已符合或重複，無需處理。"),
             "proposals": proposals, "critical_questions": critical, "fingerprint": fingerprint,
             "review": (project.state or {}).get("change_review") or {}}
 
@@ -207,7 +233,7 @@ def enrich_report(report, config):
     """Use the configured reasoning model to write PM-ready prose over cited facts."""
     from .model_runtime import structured
     items = []
-    proposals = report.get("proposals", [])
+    proposals = [p for p in report.get("proposals", []) if p.get("needs_review", True)]
     allowed = {p["requirement_id"] for p in proposals}
     instruction = ("You are a senior financial-services PM. Produce concise Traditional Chinese change proposals "
                    "from the supplied current/target/gap and quoted evidence. Do not invent approvals, existing "

@@ -222,6 +222,7 @@ PUBLIC_ROUTES = [
     ("POST", r"/api/jobs/[^/]+/(cancel|resume)"),
     ("GET", r"/api/sources/[^/]+"),
     ("PUT", r"/api/requirements/[^/]+/decision"),
+    ("POST", r"/api/requirements/[^/]+/rewrite"),
     ("POST", r"/api/projects/[^/]+/change-analysis/review"),
     ("POST", r"/api/change-requests/[^/]+/resolve"),
     ("POST", r"/api/interruptions/[^/]+/dismiss"),
