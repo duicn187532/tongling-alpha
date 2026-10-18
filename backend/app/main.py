@@ -23,6 +23,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from .db import (
@@ -1353,22 +1354,24 @@ async def event_stream(pid: str, request: Request, after: int = 0):
             db, pid, after, int(request.headers.get("last-event-id", "0"))
         )
 
+    def fetch(after_id):
+        with Session() as db:
+            return [serialize(row) for row in db.scalars(
+                select(Event)
+                .where(Event.project_id == pid, Event.id > after_id)
+                .order_by(Event.id)
+            )]
+
     async def stream():
         nonlocal cursor
         # A fresh connection observes future changes. Replaying the entire
         # history caused one full project download for every old event.
         while not await request.is_disconnected():
-            with Session() as db:
-                rows = list(
-                    db.scalars(
-                        select(Event)
-                        .where(Event.project_id == pid, Event.id > cursor)
-                        .order_by(Event.id)
-                    )
-                )
-                for row in rows:
-                    cursor = row.id
-                    yield f"id: {row.id}\ndata: {json.dumps(serialize(row), ensure_ascii=False)}\n\n"
+            # SQLite calls block; keep them off the event loop shared by all streams.
+            rows = await run_in_threadpool(fetch, cursor)
+            for row in rows:
+                cursor = row["id"]
+                yield f"id: {row['id']}\ndata: {json.dumps(row, ensure_ascii=False)}\n\n"
             if not rows:
                 yield ": keepalive\n\n"
             await asyncio.sleep(1)

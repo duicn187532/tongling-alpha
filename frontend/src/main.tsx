@@ -987,6 +987,26 @@ function App({ isClient = false }: { isClient?: boolean }) {
     return () => clearTimeout(t);
   }, [notice]);
   const manual = project?.mode === "MANUAL";
+  const [detailView, setDetailView] = useState(false);
+  const showSteps = manual || detailView;
+  function openStep(step: number) {
+    setDetailView(true);
+    setPage(step);
+  }
+  const nextStep = (() => {
+    if (!project) return null;
+    const report = project.state.change_analysis;
+    const reviewed = report && project.state.change_review?.status === "APPROVED" && project.state.change_review?.fingerprint === report.fingerprint;
+    const open = report ? report.proposals.filter((item: any) => (item.needs_review ?? true) &&
+      !["ACCEPT", "MODIFY", "REJECT"].includes(project.requirements.find((r: any) => r.id === item.requirement_id)?.decision?.action)).length : 0;
+    if (project.runtime === "RUNNING") return { text: "彤靈正在處理，完成後會告訴你下一步。", step: 0 };
+    if (!project.sources.length) return { text: "先描述需求或上傳需求文件。", step: 1 };
+    if (project.state.analysis_stale || !report) return { text: "依據已更新，請執行需求分析。", step: 5, action: "analyze" };
+    if (!reviewed) return { text: open ? `有 ${open} 項變更提案待你審閱。` : "提案已整理完成，請確認整體提案。", step: 6 };
+    if (!project.state.draft_id && !project.current_revision_id) return { text: "提案已審閱，可以產生 PRD 草稿。", step: 6 };
+    if (project.state.draft_id) return { text: "PRD 草稿已產生，請預覽並確認定版。", step: 8 };
+    return { text: "已有正式版本；加入新資訊即可開始下一次修訂。", step: 9 };
+  })();
   const workActive = busy || project?.runtime === "RUNNING" ||
     jobs.some((job) => job.status === "QUEUED" || job.status === "RUNNING") ||
     project?.activities?.some((task: any) => ["RUNNING", "QUEUED"].includes(task.status)) ||
@@ -1015,10 +1035,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
     return () => { live = false; };
   }, [page, revision?.id, revision?.content_hash, showItReference]);
   async function switchMode() {
+    if (project.runtime === "RUNNING" &&
+      !window.confirm("切換工作方式會暫停目前的 Agent 工作（已完成的成果會保留）。確定切換？")) return;
     await api("/projects/" + pid + "/workflow/mode", "POST", {
       mode: manual ? "AGENT" : "MANUAL",
     });
     if (!manual) setPage(project.state.step || 1);
+    setDetailView(false);
   }
   async function continueRun() {
     await api("/projects/" + pid + "/agent/continue", "POST");
@@ -2065,9 +2088,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </div>
           <div className="header-actions">
             <button className="side-toggle header-right-toggle" onClick={toggleRight} aria-label={mobileRightOpen ? "收合工作動態" : workActive ? "展開工作動態，工作執行中" : "展開工作動態"} aria-expanded={mobileRightOpen} aria-controls="work-sidebar">{workActive ? "◉" : "◫"}</button>
+            {project && !settingsOpen && !homeOpen && !manual && (
+              <button className="mode" onClick={() => detailView ? setDetailView(false) : openStep(project.state.step || 1)}>
+                {detailView ? "回到 Agent 對話" : "查看詳細步驟"}
+              </button>
+            )}
             {project && !settingsOpen && !homeOpen && (
-              <button className="mode" onClick={() => act(switchMode)}>
-                {manual ? "切回 Agent" : "手動工作台"}
+              <button className="mode subtle-mode" title={manual ? "由 Agent 自動檢索、分析並在需要時請你確認" : "停用自動推進，由你逐步操作"} onClick={() => act(switchMode)}>
+                {manual ? "改用 Agent 引導" : "改為手動流程"}
               </button>
             )}
             <button
@@ -2113,8 +2141,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
               ✦ 先用範例體驗
             </button>}
           </div>
-        ) : manual ? (
+        ) : showSteps ? (
           <>
+            {nextStep && <div className="next-step-bar" role="status">
+              <span className="eyebrow">下一步</span><span>{nextStep.text}</span>
+              {nextStep.action === "analyze" && project.runtime !== "RUNNING"
+                ? <button className="primary" disabled={busy} onClick={() => act(() => api(`/projects/${pid}/analysis/run`, "POST"), "已開始分析")}>執行分析</button>
+                : nextStep.step > 0 && page !== nextStep.step && <button className="primary" onClick={() => setPage(nextStep.step)}>前往「{steps[nextStep.step - 1]}」</button>}
+            </div>}
             <div className="steps">
               {steps.map((s, i) => (
                 <button
@@ -2197,12 +2231,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 "人類協作",
                 "產出 PRD",
               ].map((s, i) => (
-                <span
-                  className={(project.state.step || 1) > i * 2 ? "done" : ""}
+                <button
+                  type="button"
+                  className={`task-chip ${(project.state.step || 1) > i * 2 ? "done" : ""}`}
                   key={s}
+                  onClick={() => openStep([1, 2, 5, 6, 8][i])}
                 >
                   {s}
-                </span>
+                </button>
               ))}
             </div>
             {config?.provider === "mock" && (
@@ -2254,6 +2290,29 @@ function App({ isClient = false }: { isClient?: boolean }) {
                     </div>
                   </div>
                 ),
+              )}
+              {project.state.retrieval_queries && (
+                <article className="assistant-message">
+                  <span className="avatar">彤</span>
+                  <div>
+                    <h3>我先查了共用知識</h3>
+                    <p>搜尋詞：{project.state.retrieval_queries.join("、")}。找到 {project.state.retrieval_results?.length || 0} 筆，
+                      已把相關的 {project.sources.filter((src: any) => src.kind !== "REQUIREMENT_TEXT").length} 份加入本案依據；不相關的不會用來推論需求。</p>
+                    <div className="actions">
+                      <button onClick={() => openStep(3)}>查看依據</button>
+                      <button onClick={() => openStep(2)}>自己再搜尋</button>
+                    </div>
+                  </div>
+                </article>
+              )}
+              {nextStep && project.runtime !== "RUNNING" && project.interruptions.length === 0 && (
+                <div className="attention">
+                  <span className="badge">下一步</span>
+                  <p>{nextStep.text}</p>
+                  {nextStep.action === "analyze"
+                    ? <button className="primary" disabled={busy} onClick={() => act(continueRun)}>開始分析 →</button>
+                    : nextStep.step > 1 && <button className="primary" onClick={() => openStep(nextStep.step)}>前往「{steps[nextStep.step - 1]}」→</button>}
+                </div>
               )}
               {project.interruptions.length > 0 && (
                 <div className="attention">
@@ -2444,23 +2503,17 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 project.requirements.length > 0 && (
                   <button
                     onClick={() =>
-                      act(async () => {
-                        if (!manual)
-                          await api(`/projects/${pid}/workflow/mode`, "POST", {
-                            mode: "MANUAL",
-                          });
-                        setPage(
-                          project.changes.some((c: any) => c.status === "OPEN")
-                            ? 9
-                            : 6,
-                        );
-                      })
+                      openStep(
+                        project.changes.some((c: any) => c.status === "OPEN")
+                          ? 9
+                          : 6,
+                      )
                     }
                   >
                     前往下一步：
                     {project.changes.some((c: any) => c.status === "OPEN")
                       ? "變更審查"
-                      : "人工確認"}
+                      : "提案審閱"}
                   </button>
                 )}
             </div>

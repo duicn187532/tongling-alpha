@@ -68,7 +68,6 @@ if ($nodeModulesChanged -or -not (Test-Path -LiteralPath $distIndex) -or
     finally { Pop-Location }
 }
 $env:DATA_DIR = Join-Path $taskRoot 'data'
-$env:TONGLING_LAN = '0'
 $env:TONGLING_CLIENT_GATEWAY = '0'
 Push-Location backend
 try {
