@@ -23,6 +23,7 @@ TASK_ROLES = {
     "GRAPH_BUILD_VALIDATION": "worker", "CASE_RELEVANCE_SCORING": "worker",
     "AGENT_EVIDENCE_JUDGEMENT": "reasoning", "GRAPH_REASONING": "reasoning",
     "ARCHITECTURE_IMPACT": "reasoning", "PRD_ASSIST": "reasoning",
+    "CHANGE_PROPOSAL": "reasoning",
 }
 ROUTER_DEFAULTS = {
     "schema_version": 2, "mode": "legacy",
@@ -81,12 +82,11 @@ def enabled(config, name):
 
 def acquire(config, heavy=False, timeout_seconds=90):
     global active, _heavy_active
+    from .resource_limits import acquire_llm
+    from .activity import current
+    limit = min(max(1, int(config.get("model_concurrency", 2))), resource_limit)
+    acquire_llm(1 if heavy else limit, timeout_seconds, current.get(), heavy=heavy)
     with condition:
-        available = condition.wait_for(
-            lambda: active < min(max(1, int(config.get("model_concurrency", 2))), resource_limit)
-            and (not heavy or _heavy_active == 0), timeout=timeout_seconds)
-        if not available:
-            raise TimeoutError("模型資源等待逾時，請稍後重試")
         active += 1
         if heavy:
             _heavy_active += 1
@@ -94,6 +94,8 @@ def acquire(config, heavy=False, timeout_seconds=90):
 
 def release(heavy=False):
     global active, _heavy_active
+    from .resource_limits import release_llm
+    release_llm()
     with condition:
         active = max(0, active - 1)
         if heavy:

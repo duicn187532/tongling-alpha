@@ -21,9 +21,9 @@ def clear_pairing_attempts():
 def test_gateway_pairing_and_project_isolation(client, monkeypatch):
     monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
     with TestClient(app, base_url="https://testserver") as alice, TestClient(app, base_url="https://testserver") as bob:
-        assert alice.get("/").status_code == 200
+        assert alice.get("/").status_code == 404  # HTML is served by the frontend process.
         assert alice.get("/openapi.json").status_code == 404
-        assert alice.get("/api/session/context").json() == {"role": "CLIENT", "authenticated": False}
+        assert alice.get("/api/session/context").json()["authenticated"] is False
         assert alice.get("/api/projects").status_code == 401
         assert alice.get("/api/settings").status_code == 403
         code = client_gateway.pairing_details()["code"]
@@ -36,6 +36,10 @@ def test_gateway_pairing_and_project_isolation(client, monkeypatch):
         assert "client_owner_id" not in first.json()["state"]
         assert [p["id"] for p in alice.get("/api/projects").json()] == [pid]
         assert bob.get("/api/projects").json() == []
+        assert [p["id"] for p in alice.get("/api/dashboard").json()["projects"]] == [pid]
+        assert bob.get("/api/dashboard").json()["projects"] == []
+        assert bob.post(f"/api/projects/{pid}/todos", json={"title": "不應存取"}).status_code == 404
+        assert alice.post(f"/api/projects/{pid}/todos", json={"title": "客戶端代辦"}).status_code == 200
         assert bob.get(f"/api/projects/{pid}").status_code == 404
         assert bob.get(f"/api/projects/{pid}/pulse").status_code == 404
         assert bob.post(f"/api/projects/{pid}/agent/continue").status_code == 404
@@ -172,3 +176,105 @@ def test_delegated_agent_reaches_reviewable_draft(client):
     assert detail["state"]["draft_id"]
     assert all(r["decision"].get("decided_by") == "AGENT_DELEGATED" for r in detail["requirements"])
     assert detail["runtime"] == "WAITING_HUMAN"  # Final adoption stays human.
+
+
+def _set_mode(monkeypatch, client, mode, network="LAN"):
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", False)
+    response = client.put("/api/admin/client-access/mode", json={"mode": mode, "demo_network": network})
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.fixture
+def restore_pairing(client, monkeypatch):
+    yield
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", False)
+    client.put("/api/admin/client-access/mode", json={"mode": "pairing"})
+    client_gateway.DEMO_ISSUES.clear()
+
+
+def test_access_mode_defaults_to_pairing_and_only_host_can_change(client, monkeypatch, restore_pairing):
+    assert client.get("/api/admin/client-access").json()["mode"] == "pairing"
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
+    with TestClient(app, base_url="https://testserver") as visitor:
+        context = visitor.get("/api/session/context").json()
+        assert context["mode"] == "pairing" and context["demo_available"] is False
+        assert visitor.post("/api/session/demo").status_code == 403
+        # The gateway process refuses the admin route even for a paired visitor.
+        code = client_gateway.pairing_details()["code"]
+        assert visitor.post("/api/pair", json={"code": code}).status_code == 200
+        assert visitor.put("/api/admin/client-access/mode", json={"mode": "demo"}).status_code == 403
+        assert visitor.get("/api/admin/client-access").status_code == 403
+        assert visitor.put("/api/settings", json={}).status_code == 403
+    assert client_gateway.access_config()["mode"] == "pairing"
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", False)
+    # A non-loopback caller on the host process is refused as well.
+    # No context manager: entering one would restart the host workers' lifespan.
+    lan = TestClient(app, base_url="http://testserver", client=("192.168.1.30", 5000))
+    assert lan.put("/api/admin/client-access/mode", json={"mode": "demo"}).status_code == 403
+
+
+def test_demo_mode_sessions_are_isolated_and_die_with_demo_mode(client, monkeypatch, restore_pairing):
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
+    with TestClient(app, base_url="https://testserver") as paired:
+        code = client_gateway.pairing_details()["code"]
+        assert paired.post("/api/pair", json={"code": code}).status_code == 200
+        paired_pid = paired.post("/api/projects", json={"name": "正式配對"}).json()["id"]
+        _set_mode(monkeypatch, client, "demo")
+        # Persisted in the workspace row: a fresh read (restart) sees the same mode.
+        client_gateway._access_cache = (0.0, client_gateway.ACCESS_DEFAULTS)
+        with Session() as db:
+            assert client_gateway.access_config(db)["mode"] == "demo"
+        with TestClient(app, base_url="https://testserver") as alice, TestClient(app, base_url="https://testserver") as bob:
+            assert alice.get("/api/projects").status_code == 401
+            assert alice.get("/api/session/context").json()["demo_available"] is True
+            assert alice.post("/api/session/demo").json()["reused"] is False
+            assert alice.post("/api/session/demo").json()["reused"] is True  # refresh reuses
+            assert bob.post("/api/session/demo").status_code == 200
+            assert alice.get("/api/session/context").json()["session_kind"] == "DEMO"
+            a = alice.post("/api/projects", json={"name": "Alice 展示"}).json()["id"]
+            b = bob.post("/api/projects", json={"name": "Bob 展示"}).json()["id"]
+            assert [p["id"] for p in alice.get("/api/projects").json()] == [a]
+            assert [p["id"] for p in bob.get("/api/projects").json()] == [b]
+            assert bob.get(f"/api/projects/{a}").status_code == 404
+            assert bob.post(f"/api/projects/{a}/agent/continue").status_code == 404
+            job = alice.post("/api/jobs", json={"kind": "RAG", "project_id": a, "query": "撥薪"})
+            assert job.status_code == 202, job.text
+            assert bob.get(f'/api/jobs/{job.json()["job_id"]}').status_code == 404
+            assert bob.post(f'/api/jobs/{job.json()["job_id"]}/cancel').status_code == 404
+            assert alice.get("/api/settings").status_code == 403
+            assert alice.get("/api/admin/client-sessions").status_code == 403
+            assert alice.get("/api/knowledge/servers").status_code == 403
+            assert alice.put("/api/admin/client-access/mode", json={"mode": "demo"}).status_code == 403
+            result = _set_mode(monkeypatch, client, "pairing")
+            assert result["revoked_demo_sessions"] >= 2
+            assert alice.get("/api/projects").status_code == 401
+            assert bob.get(f"/api/projects/{b}").status_code == 401
+            assert alice.get("/api/session/context").json()["authenticated"] is False
+            assert alice.post("/api/session/demo").status_code == 403
+        assert paired.get(f"/api/projects/{paired_pid}").status_code == 200
+
+
+def test_demo_mode_is_lan_only_unless_host_opens_it(client, monkeypatch, restore_pairing):
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
+    _set_mode(monkeypatch, client, "demo")
+    assert client_gateway.demo_block_reason("192.168.1.20", "192.168.1.5") == ""
+    assert "區域網路" in client_gateway.demo_block_reason("8.8.8.8", "testserver")
+    monkeypatch.setattr(client_gateway, "tunnel_url", lambda: "https://demo.ngrok.example")
+    # Tunnel traffic is public even if a forwarded address looks private.
+    assert "區域網路" in client_gateway.demo_block_reason("127.0.0.1", "demo.ngrok.example")
+    _set_mode(monkeypatch, client, "demo", "PUBLIC")
+    assert client_gateway.demo_block_reason("8.8.8.8", "demo.ngrok.example") == ""
+
+
+def test_demo_session_issue_is_rate_limited(client, monkeypatch, restore_pairing):
+    monkeypatch.setattr(client_gateway, "IS_GATEWAY", True)
+    _set_mode(monkeypatch, client, "demo")
+    client_gateway.DEMO_ISSUES.clear()
+    codes = []
+    for _ in range(client_gateway.DEMO_ISSUE_LIMIT[0] + 1):
+        with TestClient(app, base_url="https://testserver") as browser:
+            codes.append(browser.post("/api/session/demo").status_code)
+    assert codes[:-1] == [200] * client_gateway.DEMO_ISSUE_LIMIT[0]
+    assert codes[-1] == 429

@@ -142,7 +142,7 @@ def judge_requirements(db, project, config):
 
 
 def explain_graph(config, query, hits, project_id=None):
-    if not enabled(config, "graph_reasoning") or not hits:
+    if config.get("_skip_graph_reasoning") or not enabled(config, "graph_reasoning") or not hits:
         return {}
     allowed = {h["source_id"]: {p.get("edge_id") for group in h["paths"] for p in group.get("paths", [])}
                for h in hits}

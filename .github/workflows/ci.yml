@@ -29,6 +29,8 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
+          npm run lint
           npm run build
+          npm run test:server
       - name: Test backend
         run: python -m pytest backend/tests -q

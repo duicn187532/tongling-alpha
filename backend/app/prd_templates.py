@@ -145,11 +145,17 @@ def canonical_v2(content):
         r.setdefault("business_rule_refs", [])
         r.setdefault("acceptance_refs", [])
 
-    def matches(pattern):
+    def matches(pattern, field):
         return [
             {
                 "requirement_id": r["id"],
-                "description": r["statement"],
+                "description": ("可能受影響，具體介面／電文／資料異動待 SA 依技術來源確認：" + r["statement"])
+                               if field in {"api_message_impact", "data_impact", "batch_integration_impact"}
+                               and not any(f.get("source_kind") == "TECH_SPEC" for f in r.get("evidence", []))
+                               else r["statement"],
+                **({"status": "SA_CONFIRMATION_REQUIRED" if not any(f.get("source_kind") == "TECH_SPEC" for f in r.get("evidence", []))
+                              else "SOURCE_BACKED"}
+                   if field in {"api_message_impact", "data_impact", "batch_integration_impact"} else {}),
                 "source_refs": r["evidence_refs"],
             }
             for r in reqs
@@ -170,10 +176,11 @@ def canonical_v2(content):
             for x in content.get(field, [])
             if not isinstance(x, dict) or not x.get("requirement_id")
         ]
-        content[field] = independent + matches(pattern)
+        content[field] = independent + matches(pattern, field)
     content["decisions"] = [
         {
             "requirement_id": r["id"],
+            "topic": r.get("topic", ""),
             "action": r["decision"].get("action"),
             "rationale": r["decision"].get("rationale", ""),
         }
@@ -221,12 +228,12 @@ def project(content, template, version="草稿"):
             or item.get("statement")
             or item.get("summary")
             or item.get("capability_or_practice")
-            or (
-                " · ".join(
-                    str(item.get(k, ""))
-                    for k in ["requirement_id", "action", "rationale"]
-                )
-            ).strip(" ·")
+            or " · ".join(filter(None, [
+                item.get("topic") or str(item.get("requirement_id", "")),
+                {"ACCEPT": "採納", "MODIFY": "修改後採納", "REJECT": "不納入",
+                 "PENDING": "待確認"}.get(item.get("action"), str(item.get("action", ""))),
+                item.get("rationale", ""),
+            ]))
         )
 
     for s in template.get("sections", []):
@@ -254,6 +261,9 @@ def project(content, template, version="草稿"):
             block["paragraphs"] += [
                 "成功指標：" + concise(x) for x in content.get("success_metrics", [])
             ]
+            if content.get("change_analysis"):
+                block["paragraphs"].append("本次變更分析：" + content["change_analysis"].get("summary", ""))
+                block["paragraphs"] += ["現況：" + concise(x) for x in content.get("current_state", [])]
         elif key == "requirements":
             block["rows"] = [
                 {
@@ -302,6 +312,10 @@ def project(content, template, version="草稿"):
                 0,
                 f"本次納入 {len(content['requirements'])} 項已確認需求，詳見功能需求表；非範圍、假設與依賴列於下方。",
             )
+            block["paragraphs"] += [
+                f"{ {'ADD': '新增', 'MODIFY': '修改', 'REMOVE': '移除'}.get(item.get('action'), item.get('action', '待確認'))} · {item.get('before', '現況待確認')} → {item.get('after', '目標待確認')}"
+                for item in content.get("change_scope", [])
+            ]
         if key == "systems":
             block["diagrams"] = [
                 d for d in content.get("diagrams", []) if d["type"] != "FUNCTIONAL"

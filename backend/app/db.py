@@ -61,6 +61,38 @@ class ClientSession(Row, Base):
     client_id: Mapped[str] = mapped_column(String(128), index=True)
     expires_at: Mapped[int] = mapped_column(Integer)
     revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_seen_at: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(16), default="PAIRED", server_default="PAIRED")
+
+
+class AppJob(Row, Base):
+    __tablename__ = "app_jobs"
+    __table_args__ = (UniqueConstraint("session_id", "idempotency_key"),)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    queue_class: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[str] = mapped_column(String, default=now)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    heartbeat_at: Mapped[str] = mapped_column(String, default=now)
+    dismissed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class ResourceLease(Row, Base):
+    __tablename__ = "resource_leases"
+    resource: Mapped[str] = mapped_column(String(24), index=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    expires_at: Mapped[str] = mapped_column(String)
 
 
 class KnowledgeServer(Row, Base):
@@ -229,6 +261,7 @@ class Activity(Row, Base):
     heartbeat_at: Mapped[str] = mapped_column(String, default=now)
     updated_at: Mapped[str] = mapped_column(String, default=now)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    dismissed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Interruption(Row, Base):

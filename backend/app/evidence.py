@@ -205,6 +205,10 @@ def mark_stale(db, project, source_id, summary):
     state["dirty_sources"] = sorted(dirty)
     state["analysis_stale"] = True
     state["draft_id"] = None
+    added = db.get(Source, source_id)
+    if added is not None and added.kind in {"REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT"}:
+        # New requirement wording deserves a fresh shared-library search.
+        state["retrieval_done"] = False
     project.state = state
     project.epoch += 1
     project.runtime = "READY"

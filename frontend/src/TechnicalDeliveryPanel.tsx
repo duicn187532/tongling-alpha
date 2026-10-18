@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { submitAndWait } from "./jobClient";
 
 const GROUPS: [string, string][] = [
   ["system_components", "系統與責任"], ["interface_contracts", "電文／API 異動"],
@@ -87,9 +88,9 @@ export function TechnicalDeliveryPanel({ revision, sources, requirements, isClie
     if (!searchQuery.trim()) return;
     setSearching(true); setSearchResults([]); setSearchWarnings([]);
     try {
-      const response = await api<any>("/retrieval/search", "POST", {
+      const response = await submitAndWait("RAG", {
         project_id: revision.project_id, query: searchQuery.trim(),
-      }, 300000);
+      });
       setSearchResults(response.results || []);
       setSearchWarnings(response.warnings || []);
       setFeedback(`${response.results?.length || 0} 份檢索結果。請核對相關性，將適合的技術文件加入專案。`);

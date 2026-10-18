@@ -126,6 +126,12 @@ class HttpKnowledgeServerProvider:
         from urllib.parse import quote
         return self._request("GET", "/evidence/" + quote(evidence_id, safe="") + "/metadata")
 
+    def list_documents(self):
+        return self._request("GET", "/documents")
+
+    def rescan(self):
+        return self._request("POST", "/rescan")
+
 
 def _local_hit(hit, scope):
     return {**hit, "source_scope": scope, "source_location": "LOCAL",
@@ -195,7 +201,7 @@ def merge(local_hits, remote_hits, limit):
     ))[:limit]
 
 
-def retrieve(db, query, project_id, config, local_search, strategy=None, source_ids=None, provider_factory=None):
+def retrieve(db, query, project_id, config, local_search, strategy=None, source_ids=None, provider_factory=None, remote_query=None):
     provider_factory = provider_factory or HttpKnowledgeServerProvider
     policy = policy_for(db, project_id, config)
     allowed = local_source_ids(db, project_id, policy)
@@ -215,20 +221,21 @@ def retrieve(db, query, project_id, config, local_search, strategy=None, source_
         return merge(local, [], config["top_k"])
     remote = []
     for server in db.scalars(select(KnowledgeServer).where(KnowledgeServer.enabled == 1)):
+        sent = remote_query or query
         audit = RemoteQueryAudit(project_id=project_id, server_id=server.id,
-                                 query_hash=hashlib.sha256(query.encode()).hexdigest(), status="RUNNING")
+                                 query_hash=hashlib.sha256(sent.encode()).hexdigest(), status="RUNNING")
         db.add(audit)
         try:
             provider = provider_factory(server)
             capabilities = set(server.capabilities or provider.capabilities())
             if "SEARCH" not in capabilities:
                 raise ValueError("伺服器不支援 SEARCH")
-            for rank, item in enumerate(provider.search(query, config["top_k"], project_id), 1):
+            for rank, item in enumerate(provider.search(sent, config["top_k"], project_id), 1):
                 hit = _remote_hit(item, server, rank, "SERVER_SEARCH", config)
                 if hit:
                     remote.append(hit)
             if "GRAPH" in capabilities and config.get("graph_retrieval_enabled"):
-                for rank, item in enumerate(provider.graph_search(query, config.get("graph_document_top_k", 3), project_id), 1):
+                for rank, item in enumerate(provider.graph_search(sent, config.get("graph_document_top_k", 3), project_id), 1):
                     hit = _remote_hit(item, server, rank, "SERVER_GRAPH", config)
                     if hit:
                         remote.append(hit)
@@ -236,3 +243,108 @@ def retrieve(db, query, project_id, config, local_search, strategy=None, source_
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             audit.status, audit.detail = "DEGRADED", str(exc)[:200]
     return merge(local, remote, config["top_k"])
+
+
+# Function words that separate topics in a requirement sentence. Single
+# characters such as 需/可/時 are left alone because they start real words.
+_SPLIT = re.compile(r"必須|需要|應該|可以|以及|並且|透過|進行|之後|之前|如果|的|與|及|和|或|並|且|若|則|等|給|讓")
+_PUNCT = re.compile(r"[\s，。、；;：:,.!?！？（）()「」『』【】\[\]/\\|\"'“”‘’-]+")
+
+
+def focus_queries(name, text, limit=3):
+    """Short topic phrases for Agent retrieval.
+
+    Remote servers score by matched-term ratio, so one long requirement text
+    scores near zero. These phrases are search terms, not the requirement text.
+    """
+    segments = []
+    for clause in _PUNCT.split(text or ""):
+        for part in _SPLIT.split(clause):
+            part = part.strip()
+            if 2 <= len(part) <= 16 and part not in segments:
+                segments.append(part)
+    queries = []
+    name = (name or "").strip()
+    if len(name) >= 2:
+        queries.append(name[:24])
+    for start in range(0, len(segments), 2):
+        if len(queries) >= limit:
+            break
+        phrase = " ".join(segments[start:start + 2])[:24]
+        if phrase not in queries:
+            queries.append(phrase)
+    return queries
+
+
+def agent_search(db, project, text, config, local_search, provider_factory=None):
+    """The Agent's own library search: one local pass with the full requirement
+    plus focused passes that also reach enabled company file servers."""
+    queries = focus_queries(project.name, text)
+    passes = [(text or project.name, queries[0] if queries else project.name)]
+    passes += [(query, query) for query in queries[1:]]
+    order = {"KEY": 0, "SUPPORTING": 1, "CONTEXT": 2, "EXTERNAL_BENCHMARK": 3, "REJECTED": 4}
+    best = {}
+    for local_query, remote_query in passes:
+        found = retrieve(db, local_query, project.id, config, local_search,
+                         provider_factory=provider_factory, remote_query=remote_query)
+        # Release SQLite's write lock (audit rows) before the next slow
+        # embedding or HTTP pass; other workers' heartbeats wait on it.
+        db.commit()
+        for hit in found:
+            current = best.get(hit["source_id"])
+            if current is None or (order.get(hit["evidence_role"], 3), -hit.get("case_relevance_score", 0)) < (
+                    order.get(current["evidence_role"], 3), -current.get("case_relevance_score", 0)):
+                best[hit["source_id"]] = {**hit, "matched_query": remote_query}
+    hits = sorted(best.values(), key=lambda h: (order.get(h["evidence_role"], 3), -h.get("case_relevance_score", 0)))
+    return hits[:max(config.get("top_k", 8), 8)], queries
+
+
+def _excerpt(content, query, size=1200):
+    terms = sorted({t for t in re.findall(r"[㐀-鿿]{2}|[a-z0-9]{3,}", (query or "").lower())}, key=len, reverse=True)
+    lower = content.lower()
+    offset = min((lower.find(t) for t in terms if lower.find(t) >= 0), default=0)
+    start = max(0, offset - 200)
+    return content[start:start + size]
+
+
+def import_remote_evidence(db, project, server_id, evidence_id, config, query="", provider_factory=None):
+    """Copy one company-server hit into this project as a reviewable source.
+
+    The server's cache policy decides how much text may be kept on this host.
+    Returns (source, created). The caller decides how to mark the project stale.
+    """
+    from .db import Link
+    from .evidence import ingest
+    policy = policy_for(db, project.id, config)
+    if "SERVER_SHARED" not in policy["scopes"] or not policy["allow_remote_query"] or not policy["server_enabled"]:
+        raise ValueError("此專案的知識政策未允許使用公司檔案服務器")
+    server = db.get(KnowledgeServer, server_id)
+    if not server or not server.enabled:
+        raise ValueError("公司檔案服務器未啟用或已移除")
+    if server.cache_policy not in {"SNIPPET_ONLY", "FULL_CONTENT"}:
+        raise ValueError("此公司檔案服務器設定為不在本機保留內容；請主機管理者將「本機保留範圍」改為片段或全文後再加入")
+    remote_key = f"{server.id}:{evidence_id}"
+    linked = set(db.scalars(select(Link.source_id).where(Link.project_id == project.id)))
+    for source in db.scalars(select(Source).where(Source.provider == "KNOWLEDGE_SERVER", Source.status == "ACTIVE")):
+        if source.id in linked and (source.meta or {}).get("remote_key") == remote_key:
+            return source, False
+    raw = (provider_factory or HttpKnowledgeServerProvider)(server).fetch_evidence(evidence_id)
+    if not isinstance(raw, dict) or not str(raw.get("content", "")).strip():
+        raise ValueError("公司檔案服務器沒有回傳可保存的文字內容")
+    meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    content = str(raw["content"])
+    if server.cache_policy == "SNIPPET_ONLY":
+        content = _excerpt(content, query)
+    verified = meta.get("authority_class") == "INTERNAL_AUTHORITY" and meta.get("verified_authority") is True
+    source = ingest(
+        db, str(raw.get("title") or evidence_id)[:300], [{"text": content}], "KNOWLEDGE_SERVER",
+        "INTERNAL_POLICY" if verified else "BUSINESS_KNOWLEDGE", None,
+        {"library_scope": "PROJECT", "remote_key": remote_key, "provider_id": server.id,
+         "provider_name": server.name, "remote_evidence_id": str(evidence_id),
+         "remote_uri": str(raw.get("uri", ""))[:1000], "version": meta.get("version"),
+         "content_hash": meta.get("content_hash"), "cache_policy": server.cache_policy,
+         "excerpt_only": server.cache_policy == "SNIPPET_ONLY"},
+    )
+    db.add(Link(project_id=project.id, source_id=source.id))
+    db.flush()
+    return source, True

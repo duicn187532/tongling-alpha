@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { KnowledgeSettings } from "./KnowledgeSettings";
 import { V7Settings } from "./V7Settings";
 import { jobLabel } from "./KnowledgePanel";
 
-type Tab = "documents" | "graph" | "retrieval" | "policy";
+type Tab = "documents" | "graph" | "retrieval";
 type Props = {
   config: any;
   setConfig: (value: any) => void;
@@ -13,7 +12,7 @@ type Props = {
   onOpenFolder: () => void;
 };
 
-export function KnowledgeManager({ config, setConfig, project, act, onOpenFolder }: Props) {
+export function KnowledgeManager({ config, setConfig, act, onOpenFolder }: Props) {
   const [tab, setTab] = useState<Tab>("documents");
   const [documents, setDocuments] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
@@ -67,13 +66,13 @@ export function KnowledgeManager({ config, setConfig, project, act, onOpenFolder
   }]));
 
   return <section className="knowledge-manager">
-    <p>管理這台主機的共用知識。遠端 Agent 可以檢索有效的共用文件，但其他使用者的專案文件不會加入此清單。</p>
+    <p>彤靈內建知識庫保存在這台主機；公司檔案服務器由獨立程序與資料夾管理，透過 API 提供檢索。遠端 Agent 只能使用設定允許的來源。</p>
     <div className="settings-tabs" role="tablist" aria-label="知識庫管理">
-      {([ ["documents", "文件"], ["graph", "圖譜"], ["retrieval", "檢索"], ["policy", "來源權限"] ] as const).map(([key, title]) =>
+      {([ ["documents", "內建文件"], ["graph", "內建圖譜"], ["retrieval", "內建檢索"] ] as const).map(([key, title]) =>
         <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{title}</button>)}
     </div>
     {tab === "documents" && <>
-      <div className="card"><h3>共用文件 · {documents.filter((d) => d.searchable).length} 份可檢索</h3>
+      <div className="card"><h3>彤靈內建知識庫 · {documents.filter((d) => d.searchable).length} 份可檢索</h3>
         <p>專用資料夾：{folder?.path || "尚未設定"} · 已索引 {folder?.files || 0} 份</p>
         <div className="actions"><button onClick={onOpenFolder}>設定資料夾路徑</button>
           <button disabled={!!busy || !folder?.configured} onClick={() => run("正在讀取資料夾", async () => {
@@ -153,7 +152,6 @@ export function KnowledgeManager({ config, setConfig, project, act, onOpenFolder
       </div>
       <V7Settings tab="retrieval" config={config} setConfig={setConfig} act={act} />
     </>}
-    {tab === "policy" && <KnowledgeSettings project={project} act={act} />}
     {busy && tab !== "retrieval" && <p className="execution-card" role="status">{busy} · 已等待 {elapsed} 秒，請稍候…</p>}
     {feedback && <p className="feedback success" role="status">{feedback}</p>}
     {error && <p className="feedback warning" role="alert">{error}</p>}
