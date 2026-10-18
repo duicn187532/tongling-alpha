@@ -67,6 +67,46 @@ def _reference(fact, source):
             "condition": fact.get("condition", ""), "effective_at": fact.get("effective_at", "")}
 
 
+def _overlap(left, right):
+    a, b = normal(left), normal(right)
+    a, b = {a[i:i + 2] for i in range(len(a) - 1)}, {b[i:i + 2] for i in range(len(b) - 1)}
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def _pair_current_state(proposals, critical):
+    """Extraction may file the current rule and the requested change under
+    different topic names, which turns a modification into an "ADD" with no
+    current state. Pair an ADD with the background rule it clearly rewrites."""
+    contexts = [p for p in proposals if p["status"] == "CONTEXT"]
+    for item in proposals:
+        if item["status"] != "ADD" or not contexts:
+            continue
+        ranked = sorted(((_overlap(item["target_state"], c["current_state"]), c) for c in contexts),
+                        key=lambda pair: pair[0], reverse=True)
+        best_score, best = ranked[0]
+        runner_up = ranked[1][0] if len(ranked) > 1 else 0
+        if best_score < 0.25 or best_score - runner_up < 0.1:
+            continue
+        contexts.remove(best)
+        before = best["current_state"]
+        item.update(status="MODIFY", current_state=before,
+                    gap_delta=f"由「{before}」變更為「{item['target_state']}」")
+        item["change_proposal"] = {**item["change_proposal"], "action": "MODIFY", "before": before}
+        refs = item["evidence_uncertainty"]["references"]
+        refs += [r for r in best["evidence_uncertainty"]["references"] if r not in refs]
+        item["evidence_uncertainty"]["support"] = "DIRECT"
+        missing = "現況缺少可引用的規範或系統證據"
+        item["evidence_uncertainty"]["open_questions"] = [q for q in item["evidence_uncertainty"]["open_questions"] if q != missing]
+        item["risks"] = [q for q in item["risks"] if q != missing]
+        best["duplicate_of"] = item["requirement_id"]
+        best["paired_current_state"] = True
+        weakened = sorted(set(RISK.findall(before)) - set(RISK.findall(item["target_state"])))
+        if weakened and not any(q["requirement_id"] == item["requirement_id"] for q in critical):
+            critical.append({"requirement_id": item["requirement_id"], "topic": item["name"], "reason": "HIGH_RISK_CHANGE",
+                             "question": f"{item['name']} 的變更會移除或放寬「{'、'.join(weakened)}」控制；請確認是否接受此風險。",
+                             "options": [], "source_refs": sorted({r["source_id"] for r in refs if r.get("source_id")})})
+
+
 def build_report(db, project):
     cache = {}
     proposals = []
@@ -159,6 +199,7 @@ def build_report(db, project):
                     "risks": uncertainty, "alternatives": [],
                     "decision": row.decision}
         proposals.append(proposal)
+    _pair_current_state(proposals, critical)
     # Fold proposals asking for the same target into the first one.
     critical_ids = {q["requirement_id"] for q in critical}
     kept = []
@@ -166,7 +207,8 @@ def build_report(db, project):
         duplicate = next((other for other in kept if proposal["status"] in REVIEW_STATUSES
                           and SequenceMatcher(None, normal(other["target_state"]), normal(proposal["target_state"])).ratio() >= 0.9),
                          None)
-        proposal["duplicate_of"] = duplicate["requirement_id"] if duplicate and proposal["requirement_id"] not in critical_ids else None
+        proposal["duplicate_of"] = proposal.get("duplicate_of") or (
+            duplicate["requirement_id"] if duplicate and proposal["requirement_id"] not in critical_ids else None)
         proposal["needs_review"] = proposal["status"] in REVIEW_STATUSES and not proposal["duplicate_of"]
         proposal["priority"] = ("HIGH" if proposal["requirement_id"] in critical_ids else
                                 "NORMAL" if proposal["needs_review"] and proposal["status"] != "UNKNOWN" else

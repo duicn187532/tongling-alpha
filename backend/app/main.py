@@ -1584,12 +1584,12 @@ def review_change_analysis(pid: str, body: ProposalReviewInput, db=Depends(get_d
             if status in {"TRUE_CONFLICT", "UNSUPPORTED"}:
                 continue
             decided = {"decided_at": now(), "decided_by": "PM_PROPOSAL_REVIEW"}
-            if proposal.get("duplicate_of"):
-                row.decision = {"action": "REJECT", "category": "FUNCTIONAL", "statement": row.statement,
-                                "rationale": f"與「{names.get(proposal['duplicate_of'], '其他提案')}」重複，已合併", **decided}
-            elif status == "CONTEXT":
+            if status == "CONTEXT":
                 row.decision = {"action": "ACCEPT", "category": "DECISION_CONTEXT", "statement": row.statement,
                                 "rationale": "現行規範，作為本次需求的背景依據", **decided}
+            elif proposal.get("duplicate_of"):
+                row.decision = {"action": "REJECT", "category": "FUNCTIONAL", "statement": row.statement,
+                                "rationale": f"與「{names.get(proposal['duplicate_of'], '其他提案')}」重複，已合併", **decided}
             elif status == "UNKNOWN":
                 row.decision = {"action": "PENDING", "category": "OPEN_ISSUE", "statement": row.statement,
                                 "rationale": "資訊不足，列為待決事項", **decided}

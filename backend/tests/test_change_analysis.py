@@ -209,3 +209,20 @@ def test_explicit_technical_non_support_is_not_invented_as_existing_api(client, 
         assert item["status"] == "UNSUPPORTED"
         assert item["impact_analysis"]["technical"][0]["source_id"] == spec.id
         assert p.state["change_analysis"]["critical_questions"][0]["reason"] == "TECHNICAL_UNSUPPORTED"
+
+
+def test_change_filed_under_another_topic_is_paired_with_its_current_rule(client, project):
+    with Session.begin() as db:
+        p = db.get(Project, project["id"])
+        rule = ingest(db, "撥薪作業規範", [{"text": "現行通知"}], kind="BUSINESS_KNOWLEDGE", project=p)
+        goal = ingest(db, "需求", [{"text": "改加密"}], kind="REQUIREMENT_TEXT", project=p)
+        db.flush()
+        apply_analysis(db, p, {
+            rule.id: [claim("撥薪通知", "撥薪入帳完成後，系統以 email 寄送薪資入帳通知給員工，通知內容為明文"),
+                      claim("撥薪轉帳", "撥薪檔需經放行主管核准方可入帳")],
+            goal.id: [claim("薪資通知方式", "撥薪入帳後，現行以明文 email 寄送薪資入帳通知，需改為加密 PDF 附件", kind="CHANGE")]})
+        by_name = {item["name"]: item for item in p.state["change_analysis"]["proposals"]}
+        assert by_name["薪資通知方式"]["status"] == "MODIFY"
+        assert "明文" in by_name["薪資通知方式"]["current_state"]
+        assert by_name["撥薪通知"]["paired_current_state"] is True and not by_name["撥薪通知"]["needs_review"]
+        assert by_name["撥薪轉帳"]["status"] == "CONTEXT" and not by_name["撥薪轉帳"].get("paired_current_state")

@@ -74,6 +74,19 @@ const statusLabels: Record<string, string> = {
   UNKNOWN: "待確認",
   TRUE_CONFLICT: "有效規範衝突",
   CONTEXT: "現行規範（背景）",
+  KEY: "關鍵依據",
+  SUPPORTING: "支持依據",
+  REJECTED: "不相關",
+  EXTERNAL_BENCHMARK: "外部參考",
+  INTERNAL_AUTHORITY: "內部正式規範",
+  UNVERIFIED_INTERNAL: "內部資料（未驗證）",
+  CURRENT: "現行有效",
+  FUTURE: "尚未生效",
+  LEXICAL: "關鍵字",
+  SEMANTIC: "語意",
+  GRAPH: "圖譜",
+  SERVER_SEARCH: "公司伺服器",
+  SERVER_GRAPH: "公司伺服器圖譜",
   HIGH_RISK_CHANGE: "放寬控制",
   TECHNICAL_UNSUPPORTED: "技術不支援",
   KEY_INFORMATION_MISSING: "缺關鍵資訊",
@@ -1033,6 +1046,12 @@ function App({ isClient = false }: { isClient?: boolean }) {
       setSearching(false);
     }
   }
+  const attachedIds = new Set((project?.sources || []).map((src: any) => src.id));
+  const attachedRemote = new Set((project?.sources || []).map((src: any) => src.meta?.remote_key).filter(Boolean));
+  const excludedHits = (project?.state?.retrieval_results || []).filter((hit: any) =>
+    !["KEY", "SUPPORTING"].includes(hit.evidence_role) && !attachedIds.has(hit.source_id) &&
+    !attachedRemote.has(`${hit.provider_id}:${hit.remote_evidence_id}`) && hit.title !== "需求起點");
+  const pmEvents = (project?.events || []).filter((e: any) => !HIDDEN_EVENTS.has(e.kind));
   const nextStep = (() => {
     if (!project) return null;
     const report = project.state.change_analysis;
@@ -1362,13 +1381,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
           {searchProjectId === pid && results.map((r: any) => (
             <article className="card" key={r.chunk_logical_id || r.chunk_id}>
               <span className="badge">
-                {r.evidence_role} · 相關度{" "}
+                {label(r.evidence_role)} · 相關度{" "}
                 {Math.round((r.case_relevance_score || 0) * 100)}%
               </span>
               <p>
                 <small>
-                  {r.retrieval_channels?.join(" + ")} · {r.authority_class} ·{" "}
-                  {r.temporal_status}
+                  {r.retrieval_channels?.map(label).join(" + ")} · {label(r.authority_class)} ·{" "}
+                  {label(r.temporal_status)}
                 </small>
               </p>
               <p>{r.case_relevance_reason}</p>
@@ -1601,7 +1620,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <div className="evidence" key={s.source_id}>
                   <strong>{s.title}</strong>
                   <p>
-                    {s.evidence_role} · 相關度{" "}
+                    {label(s.evidence_role)} · 相關度{" "}
                     {Math.round(s.case_relevance_score * 100)}%
                   </p>
                   <p>{s.case_relevance_reason}</p>
@@ -1682,7 +1701,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
         })}
         {others.length > 0 && <details className="card"><summary>無需處理的 {others.length} 項（現行規範、已符合或重複）</summary>
           {others.map((item: any) => <p key={item.requirement_id}><span className="badge">{label(item.status)}</span> {item.name}：
-            {item.duplicate_of ? `與「${names[item.duplicate_of] || "其他提案"}」重複，已合併` : item.target_state || item.current_state}</p>)}
+            {item.paired_current_state ? `已作為「${names[item.duplicate_of] || "相關提案"}」的現況` : item.duplicate_of ? `與「${names[item.duplicate_of] || "其他提案"}」重複，已合併` : item.target_state || item.current_state}</p>)}
         </details>}
       </>;
     }
@@ -2334,9 +2353,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 onClick={() => setShowActivity(!showActivity)}
               >
                 {showActivity ? "收合" : "展開"}活動紀錄 ·{" "}
-                {project.events.length}
+                {pmEvents.length}
               </button>
-              {(showActivity ? project.events : project.events.slice(-3)).map(
+              {(showActivity ? pmEvents : pmEvents.slice(-3)).map(
                 (e: any) => (
                   <div className="activity" key={e.id}>
                     <span className="event-dot" />
@@ -2346,8 +2365,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
                         {new Date(e.created_at).toLocaleTimeString("zh-TW", {
                           hour: "2-digit",
                           minute: "2-digit",
-                        })}{" "}
-                        · {e.kind}
+                        })}
+                        {EVENT_LABELS[e.kind] ? ` · ${EVENT_LABELS[e.kind]}` : ""}
                       </small>
                     </div>
                   </div>
@@ -2364,6 +2383,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       <button onClick={() => openStep(3)}>查看依據</button>
                       <button onClick={() => openStep(2)}>自己再搜尋</button>
                     </div>
+                    {excludedHits.length > 0 && <details>
+                      <summary>沒有採用的 {excludedHits.length} 份與原因</summary>
+                      {excludedHits.map((hit: any) => <div className="evidence" key={hit.source_id}>
+                        <strong>{hit.title}</strong>
+                        <p className="muted">{label(hit.evidence_role)} · 相關度 {Math.round((hit.case_relevance_score || 0) * 100)}%{hit.case_relevance_reason ? ` · ${hit.case_relevance_reason}` : ""}</p>
+                        <button disabled={busy || project.runtime === "RUNNING"} onClick={() => act(async () => {
+                          const result = hit.source_location === "REMOTE"
+                            ? await api(`/projects/${pid}/knowledge/attach-remote`, "POST", { provider_id: hit.provider_id, remote_evidence_id: hit.remote_evidence_id, query: hit.matched_query || "" })
+                            : await api(`/projects/${pid}/knowledge/attach`, "POST", { source_id: hit.source_id });
+                          setNotice(`${result.message}。重新分析後會納入需求比對。`);
+                        })}>仍要加入</button>
+                      </div>)}
+                    </details>}
                   </div>
                 </article>
               )}
@@ -3038,6 +3070,17 @@ function App({ isClient = false }: { isClient?: boolean }) {
     </div>
   );
 }
+
+// Internal bookkeeping a PM does not need in the activity log.
+const HIDDEN_EVENTS = new Set(["RUN", "DELEGATION", "ANALYSIS_STARTED", "MODE", "MEETING_ANALYZING", "DEMO", "DEMO_REVISION"]);
+const EVENT_LABELS: Record<string, string> = {
+  PROJECT: "專案", KNOWLEDGE: "知識檢索", ANALYSIS: "需求分析", DECISION: "決策",
+  AGENT_DECISION: "Agent 決策", PROPOSAL_REVIEW: "提案審閱", PRD: "PRD", PRD_EDIT: "PRD 編修",
+  EVIDENCE: "依據", SOURCE_REMOVED: "依據", MEETING: "會議", MEETING_EDIT: "會議",
+  MEETING_CONFIRMED: "會議", MEETING_ANALYSIS: "會議", MEETING_MANUAL: "會議", MEETING_ERROR: "會議",
+  PRD_DRAFT: "PRD", DIAGRAM: "圖表", BASELINE: "定版", CHANGE: "變更", PAUSE: "暫停", ERROR: "錯誤",
+  TECHNICAL_MODEL: "IT 交付", TECHNICAL_DIAGRAMS: "IT 交付", TECHNICAL_AMENDMENT: "IT 交付",
+};
 
 const SOURCE_KIND_LABELS: Record<string, string> = {
   REQUIREMENT_TEXT: "需求說明", REQUIREMENT_DOCUMENT: "需求文件", USER_UPLOAD: "一般文件",

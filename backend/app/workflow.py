@@ -227,7 +227,7 @@ def _execute(project_id, run_id, epoch):
                     "retrieval_done": True,
                     "retrieval_queries": queries,
                     "retrieval_results": [{k: h.get(k) for k in (
-                        "source_id", "title", "evidence_role", "case_relevance_score",
+                        "source_id", "title", "evidence_role", "case_relevance_score", "case_relevance_reason",
                         "source_location", "provider_id", "remote_evidence_id", "matched_query")}
                         for h in hits],
                     "remote_knowledge_references": references,
