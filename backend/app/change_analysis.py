@@ -18,6 +18,20 @@ CURRENT_KINDS = {"INTERNAL_POLICY", "TECH_SPEC", "BUSINESS_KNOWLEDGE"}
 TARGET_KINDS = {"REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT", "MEETING_RECORD"}
 RISK = re.compile(r"法遵|個資|資安|安全|加密|授權|風險|驗證|限額|遮蔽|稽核")
 # Only these need a PM decision; the rest are background or already true.
+RELAX = re.compile(r"取消|移除|刪除|停止|不再|免除|不需|無需|改為明文|明文寄送|放寬|降低")
+
+
+def weakened_controls(before, after, status):
+    """Controls the change removes or relaxes. A target that simply does not
+    repeat a control (it describes only what changes) does not weaken it."""
+    dropped = sorted(set(RISK.findall(before)) - set(RISK.findall(after)))
+    if status == "REMOVE":
+        return dropped or sorted(set(RISK.findall(before)))
+    if not RELAX.search(after):
+        return []
+    return dropped or sorted(set(RISK.findall(before)) & set(RISK.findall(after)))
+
+
 REVIEW_STATUSES = {"ADD", "MODIFY", "REMOVE", "TRUE_CONFLICT", "UNSUPPORTED", "UNKNOWN"}
 TECHNICAL_KINDS = {"TECH_SPEC"}
 DECISIONS = {"ACCEPT", "MODIFY", "REJECT"}
@@ -100,7 +114,7 @@ def _pair_current_state(proposals, critical):
         item["risks"] = [q for q in item["risks"] if q != missing]
         best["duplicate_of"] = item["requirement_id"]
         best["paired_current_state"] = True
-        weakened = sorted(set(RISK.findall(before)) - set(RISK.findall(item["target_state"])))
+        weakened = weakened_controls(before, item["target_state"], "MODIFY")
         if weakened and not any(q["requirement_id"] == item["requirement_id"] for q in critical):
             critical.append({"requirement_id": item["requirement_id"], "topic": item["name"], "reason": "HIGH_RISK_CHANGE",
                              "question": f"{item['name']} 的變更會移除或放寬「{'、'.join(weakened)}」控制；請確認是否接受此風險。",
@@ -165,7 +179,7 @@ def build_report(db, project):
             uncertainty.append("技術來源顯示現行能力不足，須由 SA 確認實作方案")
         if status == "UNKNOWN":
             uncertainty.append("需求或適用條件不足，待補充後重新判讀")
-        weakened = sorted(set(RISK.findall(before)) - set(RISK.findall(after)))
+        weakened = weakened_controls(before, after, status)
         if status == "TRUE_CONFLICT":
             question = f"{row.topic} 的有效正式規範互斥；請確認採用哪一項，或保留待確認。"
             critical.append({"requirement_id": row.id, "topic": row.topic, "reason": "TRUE_CONFLICT",

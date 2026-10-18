@@ -2390,7 +2390,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       <summary>沒有採用的 {excludedHits.length} 份與原因</summary>
                       {excludedHits.map((hit: any) => <div className="evidence" key={hit.source_id}>
                         <strong>{hit.title}</strong>
-                        <p className="muted">{label(hit.evidence_role)} · 相關度 {Math.round((hit.case_relevance_score || 0) * 100)}%{hit.case_relevance_reason ? ` · ${hit.case_relevance_reason}` : ""}</p>
+                        <p className="muted">相關度 {Math.round((hit.case_relevance_score || 0) * 100)}% · {exclusionReason(hit)}</p>
                         <button disabled={busy || project.runtime === "RUNNING"} onClick={() => act(async () => {
                           const result = hit.source_location === "REMOTE"
                             ? await api(`/projects/${pid}/knowledge/attach-remote`, "POST", { provider_id: hit.provider_id, remote_evidence_id: hit.remote_evidence_id, query: hit.matched_query || "" })
@@ -3056,6 +3056,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
       )}
     </div>
   );
+}
+
+function exclusionReason(hit: any) {
+  if (hit.evidence_role === "CONTEXT") return "只當背景參考，未作為需求依據";
+  if (hit.evidence_role === "EXTERNAL_BENCHMARK") return "外部資料，只作參考";
+  return (hit.case_relevance_score || 0) >= 0.5
+    ? "相關度不低，但未達系統的採用門檻；若內容確實相關可直接加入"
+    : "與本案需求的主題重疊少";
 }
 
 // Internal bookkeeping a PM does not need in the activity log.

@@ -567,7 +567,9 @@ def apply_analysis(db, project, extracted):
         db,
         project.id,
         "ANALYSIS",
-        f"完成 {len(affected)} 個主題比對；保留衝突供人工決策",
+        f"完成 {len(affected)} 個主題比對" + (
+            "；有來源衝突待你決策" if any(
+                r.status == "CONFLICT" for r in db.scalars(select(Requirement).where(Requirement.id.in_(changed_ids)))) else ""),
         {"affected_requirements": changed_ids},
     )
     return changed_ids

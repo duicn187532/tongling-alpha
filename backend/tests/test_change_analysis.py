@@ -17,10 +17,10 @@ def test_requested_change_is_delta_and_technical_unknown(client, project):
     with Session.begin() as db:
         p = db.get(Project, project["id"])
         old = ingest(db, "已核准驗證規範", [{"text": "現行採實體憑證並加密傳輸"}], kind="INTERNAL_POLICY", project=p)
-        goal = ingest(db, "本次需求", [{"text": "改用推播驗證"}], kind="REQUIREMENT_TEXT", project=p)
+        goal = ingest(db, "本次需求", [{"text": "改用推播驗證，不再加密傳輸"}], kind="REQUIREMENT_TEXT", project=p)
         db.flush()
         apply_analysis(db, p, {old.id: [claim("登入驗證", "現行採實體憑證並加密傳輸")],
-                               goal.id: [claim("登入驗證", "改用推播驗證", kind="CHANGE")]})
+                               goal.id: [claim("登入驗證", "改用推播驗證，不再加密傳輸", kind="CHANGE")]})
         row = db.scalar(select(Requirement).where(Requirement.project_id == p.id, Requirement.topic == "登入驗證"))
         report = p.state["change_analysis"]
         proposal = next(item for item in report["proposals"] if item["name"] == "登入驗證")
@@ -29,7 +29,7 @@ def test_requested_change_is_delta_and_technical_unknown(client, project):
         # Dropping an existing control (加密) is the risk that needs a decision.
         assert proposal["priority"] == "HIGH"
         assert proposal["current_state"] == "現行採實體憑證並加密傳輸"
-        assert proposal["target_state"] == "改用推播驗證"
+        assert proposal["target_state"] == "改用推播驗證，不再加密傳輸"
         assert proposal["impact_analysis"]["technical"][0]["status"] == "SA_CONFIRMATION_REQUIRED"
         assert report["critical_questions"][0]["reason"] == "HIGH_RISK_CHANGE"
         fingerprint = report["fingerprint"]
@@ -226,3 +226,11 @@ def test_change_filed_under_another_topic_is_paired_with_its_current_rule(client
         assert "明文" in by_name["薪資通知方式"]["current_state"]
         assert by_name["撥薪通知"]["paired_current_state"] is True and not by_name["撥薪通知"]["needs_review"]
         assert by_name["撥薪轉帳"]["status"] == "CONTEXT" and not by_name["撥薪轉帳"].get("paired_current_state")
+
+
+def test_not_repeating_a_control_is_not_weakening_it():
+    from app.change_analysis import weakened_controls
+    before = "撥薪通知以 email 寄送，帳號遮蔽僅顯示末四碼"
+    assert weakened_controls(before, "通知改為加密 PDF 附件", "MODIFY") == []
+    assert weakened_controls(before, "通知改為明文寄送，不再遮蔽帳號", "MODIFY") == ["遮蔽"]
+    assert weakened_controls(before, "", "REMOVE") == ["遮蔽"]
