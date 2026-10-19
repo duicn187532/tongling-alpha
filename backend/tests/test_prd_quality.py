@@ -2,7 +2,7 @@
 
 from app.db import Project, Session
 from app.prd_quality import check, compound_clauses
-from tests.test_prd_editor import draft
+from test_prd_editor import draft  # sibling module; works from repo root and backend/
 
 
 def row(rid, statement, **extra):
