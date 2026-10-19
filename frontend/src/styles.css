@@ -1277,3 +1277,14 @@ summary {
 .create-advanced[open] { display: grid; gap: 8px; }
 
 .settings-group { display: block; width: 100%; margin: 8px 0 2px; opacity: 0.7; font-size: 12px; }
+
+.quality-panel summary { cursor: pointer; }
+.quality-general { margin: 8px 0; }
+.quality-item { border-top: 1px solid var(--line, #ddd); padding-top: 10px; margin-top: 10px; }
+.quality-item h4 { margin: 0 0 4px; }
+.quality-item ul { margin: 4px 0; padding-left: 18px; }
+.quality-item .severity { font-size: 12px; font-weight: 700; margin-right: 4px; }
+.quality-item .severity-資訊 { opacity: 0.75; }
+.quality-proposal { display: grid; gap: 6px; margin: 8px 0; padding: 10px; border: 1px dashed var(--line, #ddd); border-radius: 8px; }
+.split-part { display: grid; gap: 4px; }
+.row-actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }

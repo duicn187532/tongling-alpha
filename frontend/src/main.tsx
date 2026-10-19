@@ -11,6 +11,7 @@ import { KnowledgePanel, jobLabel } from "./KnowledgePanel";
 import { ProjectManager } from "./ProjectManager";
 import { TechnicalDeliveryPanel } from "./TechnicalDeliveryPanel";
 import { GapPanel, RequirementRowEditor } from "./PrdEditor";
+import { QualityPanel } from "./PrdQuality";
 import { ProjectHub } from "./ProjectHub";
 import { AppearanceSettings, initAppearanceRuntime } from "./AppearanceSettings";
 import { QueueSettings } from "./QueueSettings";
@@ -1892,6 +1893,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
             )}
           </div>
           {revision && revision.id === project.state.draft_id && <GapPanel revision={revision} onChange={() => void refresh()} />}
+          {revision && revision.id === project.state.draft_id && <QualityPanel revision={revision} onChange={() => void refresh()} />}
           {prdAdvice?.result && revision && prdAdvice.revision_id === revision.id && <section className="card">
             <h3>AI 建議 · 採用後才會寫入草稿</h3>
             {prdAdvice.result.candidates?.map((item: any, i: number) => <div className="prd-row" key={i}>

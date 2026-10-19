@@ -42,9 +42,19 @@ class RequirementEditInput(BaseModel):
     actor: str | None = Field(default=None, max_length=120)
 
 
+class SplitPartInput(BaseModel):
+    title: str = Field(min_length=1, max_length=40)
+    statement: str = Field(min_length=1, max_length=600)
+
+
+class SplitInput(BaseModel):
+    parts: list[SplitPartInput] = Field(default_factory=list, max_length=4)
+
+
 class AdviceInput(BaseModel):
     kind: str = Field(min_length=1, max_length=40)
     text: str = Field(min_length=1, max_length=2000)
+    requirement_id: str | None = Field(default=None, max_length=200)
 
 
 class SectionItems(BaseModel):
@@ -77,13 +87,29 @@ def gaps(content):
             for field, (title, question) in GAP_FIELDS.items()]
 
 
+def split_rows(row, parts):
+    """Child rows replacing one requirement; evidence and decision stay shared."""
+    return [{**row, "id": f"{row['id']}::{i + 1}", "topic": part["title"], "statement": part["statement"],
+             "split_from": row["id"], **{k: part[k] for k in ("priority", "actor") if part.get(k)}}
+            for i, part in enumerate(parts)]
+
+
 def apply_edits(content, edits):
     """Replay the PM's saved section edits onto freshly built draft content."""
     for field, value in (edits or {}).items():
-        if field == "acceptance_extra":
+        if field == "splits":
+            rows = []
+            for row in content.get("requirements", []):
+                parts = value.get(row["id"])
+                rows.extend(split_rows(row, parts) if parts else [row])
+            content["requirements"] = rows
+        elif field == "acceptance_extra":
             have = {x.get("description") for x in content.get("acceptance_criteria", []) if isinstance(x, dict)}
+            items = [x if isinstance(x, dict) else {"text": x} for x in value]
             content["acceptance_criteria"] = content.get("acceptance_criteria", []) + [
-                {"description": text, "status": "TO_CONFIRM", "origin": "PM"} for text in value if text not in have]
+                {"description": x["text"], "status": "TO_CONFIRM", "origin": "PM",
+                 **({"requirement_id": x["requirement_id"]} if x.get("requirement_id") else {})}
+                for x in items if x["text"] not in have]
         elif field in TEXT_FIELDS:
             content[field] = value
         elif field in GAP_FIELDS:
@@ -189,9 +215,10 @@ def register(app, get_db, get):
         if body.kind == "acceptance_criteria":
             field = "acceptance_extra"
             value = list(edits.get(field) or [])
-            if text not in value:
-                value.append(text)
-            content = apply_edits(content, {field: [text]})
+            entry = {"text": text, "requirement_id": body.requirement_id}
+            if all((x.get("text") if isinstance(x, dict) else x) != text for x in value):
+                value.append(entry)
+            content = apply_edits(content, {field: [entry]})
             title = "驗收條件"
         else:
             field = body.kind
@@ -205,11 +232,52 @@ def register(app, get_db, get):
         _save(db, revision, project, content, field, value, f"採用 AI 建議：{title}")
         return projected(revision, db)
 
+    @app.put("/api/prd-revisions/{rid}/requirements/{req_id}/split")
+    def split_requirement(rid: str, req_id: str, body: SplitInput, db=Depends(get_db)):
+        """Apply a PM-confirmed split (2–4 parts); an empty list undoes it."""
+        revision, project = _draft(db, get, rid)
+        if body.parts and not 2 <= len(body.parts) <= 4:
+            raise HTTPException(422, "拆分須為 2–4 條；不需要拆分時請保留原需求")
+        requirement = get(db, Requirement, req_id)
+        if requirement.project_id != project.id:
+            raise HTTPException(404, "找不到需求")
+        edits = project.state.get("prd_edits") or {}
+        splits = dict(edits.get("splits") or {})
+        parts = [part.model_dump() for part in body.parts]
+        content = dict(revision.content)
+        rows = content.get("requirements", [])
+        original = next((r for r in rows if r["id"] == req_id), None)
+        children = [r for r in rows if r.get("split_from") == req_id]
+        if original is None and not children:
+            raise HTTPException(404, "此需求不在這份草稿")
+        base = original or {**{k: v for k, v in children[0].items() if k != "split_from"},
+                            "id": req_id, "topic": requirement.topic,
+                            "statement": (requirement.decision or {}).get("statement", requirement.statement)}
+        replaced = split_rows(base, parts) if parts else [base]
+        new_rows, placed = [], False
+        for row in rows:
+            if row["id"] == req_id or row.get("split_from") == req_id:
+                if not placed:
+                    new_rows.extend(replaced)
+                    placed = True
+                continue
+            new_rows.append(row)
+        content["requirements"] = new_rows
+        if parts:
+            splits[req_id] = parts
+        else:
+            splits.pop(req_id, None)
+        _save(db, revision, project, content, "splits", splits,
+              f"PM {'拆分' if parts else '取消拆分'}需求：{requirement.topic}")
+        return projected(revision, db)
+
     @app.put("/api/prd-revisions/{rid}/requirements/{req_id}")
     def edit_requirement(rid: str, req_id: str, body: RequirementEditInput, db=Depends(get_db)):
         revision, project = _draft(db, get, rid)
         if body.priority is not None and body.priority not in PRIORITIES:
             raise HTTPException(422, "優先級須為 高、中、低 或 待確認")
+        if "::" in req_id:
+            return edit_split_part(revision, project, req_id, body, db)
         requirement = get(db, Requirement, req_id)
         if requirement.project_id != project.id:
             raise HTTPException(404, "找不到需求")
@@ -233,4 +301,27 @@ def register(app, get_db, get):
         content["requirements"] = rows
         # Requirement wording lives in the decision; no section edit to replay.
         _save(db, revision, project, content, None, None, f"PM 編修需求：{row['topic']}")
+        return projected(revision, db)
+
+    def edit_split_part(revision, project, req_id, body, db):
+        parent, _, index = req_id.partition("::")
+        requirement = get(db, Requirement, parent)
+        if requirement.project_id != project.id:
+            raise HTTPException(404, "找不到需求")
+        content = dict(revision.content)
+        rows = [dict(r) for r in content.get("requirements", [])]
+        row = next((r for r in rows if r["id"] == req_id), None)
+        splits = dict((project.state.get("prd_edits") or {}).get("splits") or {})
+        if row is None or parent not in splits or not index.isdigit():
+            raise HTTPException(404, "此需求不在這份草稿")
+        part = dict(splits[parent][int(index) - 1])
+        if body.statement and body.statement.strip():
+            row["statement"] = part["statement"] = body.statement.strip()
+        for key in ("priority", "actor"):
+            value = getattr(body, key)
+            if value is not None:
+                row[key] = part[key] = value.strip() or "待確認"
+        splits[parent] = [part if i == int(index) - 1 else x for i, x in enumerate(splits[parent])]
+        content["requirements"] = rows
+        _save(db, revision, project, content, "splits", splits, f"PM 編修拆分需求：{row['topic']}")
         return projected(revision, db)

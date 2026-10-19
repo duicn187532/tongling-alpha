@@ -823,8 +823,9 @@ v7_api.register(app, get_db, get)
 knowledge_api.register(app, get_db, get)
 knowledge_management.register(app, get_db)
 project_hub.register(app, get_db, get)
-from . import prd_editor  # noqa: E402
+from . import prd_editor, prd_quality  # noqa: E402
 prd_editor.register(app, get_db, get)
+prd_quality.register(app, get_db, get)
 
 
 @app.get("/api/projects")
@@ -1427,7 +1428,8 @@ def modified_criteria(rid, statement):
     try:
         result = structured(
             config, "CHANGE_PROPOSAL",
-            "你是金融業資深 PM。依 PM 修改後的需求，寫出可驗證的繁體中文驗收條件（成功與例外情境）。"
+            "你是金融業資深 PM。依 PM 修改後的需求，寫出 1–3 條可驗證的繁體中文驗收條件，"
+            "每條一行，格式為「前提：…；操作：…；結果：…」，涵蓋主要成功情境與最重要的例外，不寫空泛條件。"
             "只能依修改後需求的內容撰寫：修改後需求未提及或已排除的行為不得出現；"
             "不得新增需求以外的系統、欄位、核准或數值。只回傳 acceptance_criteria。",
             payload, ModifiedCriteria, lambda: fallback, timeout_seconds=90, max_tokens=800)

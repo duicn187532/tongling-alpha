@@ -161,6 +161,10 @@ ACTION_ITEM, QUESTION, EXCLUDED, SYSTEM_CAPABILITY. Do not infer agreements or o
 No invented facts, approvals, system names or emails. Preserve uncertainty. For each assertion identify
 the exact subject, applicable condition and effective date only when explicit. Use supersedes only for
 explicitly replaced assertion identifiers; do not treat a later meeting as replacing every older source.
+Topic granularity: one topic per business capability or rule that can be accepted on its own (for example
+通知加密方式, 密碼傳遞方式). Keep fields, conditions, examples and minor details inside that topic's statement;
+never create a topic per sentence, field or detail. Background, motivation and schedule are not REQUIREMENT
+unless they constrain the solution. Prefer fewer, specific, decisive assertions over many fragments.
 Output language: Traditional Chinese."""
 
 

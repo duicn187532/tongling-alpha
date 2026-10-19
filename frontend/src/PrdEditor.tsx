@@ -104,7 +104,17 @@ export function RequirementRowEditor({ revision, row, onChange }: { revision: an
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   if (revision.status !== "IN_REVIEW" || !row.requirement_id) return null;
-  if (!open) return <button className="text-button" onClick={() => { setStatement(row.description); setOpen(true); }}>編修</button>;
+  const parent = String(row.requirement_id).includes("::") ? String(row.requirement_id).split("::")[0] : "";
+  if (!open) return <span className="row-actions">
+    <button className="text-button" onClick={() => { setStatement(row.description); setOpen(true); }}>編修</button>
+    {parent && <button className="text-button" disabled={saving} onClick={async () => {
+      setSaving(true);
+      try { onChange(await api(`/prd-revisions/${revision.id}/requirements/${parent}/split`, "PUT", { parts: [] })); }
+      catch (e) { setError((e as Error).message); }
+      finally { setSaving(false); }
+    }}>取消拆分</button>}
+    {error && <small role="alert" className="feedback warning">{error}</small>}
+  </span>;
   return <div className="gap-item">
     <label>需求<textarea rows={3} value={statement} onChange={(e) => setStatement(e.target.value)} /></label>
     <div className="row">
