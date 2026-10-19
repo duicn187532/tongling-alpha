@@ -87,3 +87,14 @@ def test_adopted_criteria_attach_to_their_requirement(client, project):
                for c in applied["content"]["acceptance_criteria"])
     issues = client.get(f"/api/prd-revisions/{revision['id']}/quality").json()["issues"]
     assert not any(i["requirement_id"] == req_id and i["code"] == "NO_CRITERIA" for i in issues)
+
+
+def test_word_export_opens_with_a_review_summary(client, project):
+    from docx import Document
+    revision = draft(client, project)
+    path = client.get(f"/api/prd-revisions/{revision['id']}/export-template")
+    assert path.status_code == 200
+    import io
+    text = "\n".join(p.text for p in Document(io.BytesIO(path.content)).paragraphs)
+    assert "審閱摘要" in text and "品質提示（僅供參考，不影響定版）" in text
+    assert text.index("審閱摘要") < text.index("文件資訊與版本")

@@ -116,6 +116,7 @@ def register(app, get_db, get):
             version=row.version,
             content_hash=row.content_hash,
             created_at=row.created_at,
+            project_id=row.project_id,
         )
         return FileResponse(render_docx(exported), filename="PRD-template.docx")
 

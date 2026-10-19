@@ -497,6 +497,38 @@ def create_technical_amendment(db, project, parent):
     return row
 
 
+def add_review_summary(doc, content, revision):
+    """One page a reviewer reads first: what changed, what is open, what to check."""
+    from .db import Project, Session as _Session
+    from .faithfulness import project_sources_text
+    from .prd_quality import check
+    doc.add_heading("審閱摘要", 1)
+    actions = {"ADD": "新增", "MODIFY": "修改", "REMOVE": "移除"}
+    changes = content.get("change_scope") or []
+    doc.add_paragraph(f"本版變更：{len(changes)} 項" if changes else "本版變更：無變更分析紀錄")
+    for item in changes[:12]:
+        doc.add_paragraph(f"{actions.get(item.get('action'), item.get('action', ''))}：{item.get('after', '')}",
+                          style="List Bullet")
+    issues = [x.get("statement") or x.get("description", "") for x in content.get("open_issues", [])
+              if isinstance(x, dict)]
+    issues = list(dict.fromkeys(i for i in issues if i))
+    doc.add_paragraph(f"待決事項：{len(issues)} 項" if issues else "待決事項：無")
+    for issue in issues[:8]:
+        doc.add_paragraph(issue, style="List Bullet")
+    project_id = getattr(revision, "project_id", None)
+    with _Session() as lookup:
+        project = lookup.get(Project, project_id) if project_id else None
+        sources_text = project_sources_text(lookup, project) if project else None
+    quality = check(content, sources_text)
+    attention = [i for i in quality["issues"] if i["severity"] == "提醒"]
+    doc.add_paragraph(f"品質提示（僅供參考，不影響定版）：{len(attention)} 項建議先確認")
+    for issue in attention[:8]:
+        doc.add_paragraph(f"{issue['topic'] or 'PRD'}：{issue['message']}", style="List Bullet")
+    review = [i["topic"] for i in quality["issues"] if i["code"] == "REVIEW_UNIT"]
+    if review:
+        doc.add_paragraph("建議送審查單位（法遵、風管、資安）確認：" + "、".join(dict.fromkeys(review)))
+
+
 def render_docx(revision, content=None, version=None):
     from docx import Document
     from docx.shared import Inches, Pt
@@ -520,6 +552,7 @@ def render_docx(revision, content=None, version=None):
     doc.add_paragraph(
         f"文件快照：{revision.content_hash}\n建立時間：{revision.created_at}"
     )
+    add_review_summary(doc, content, revision)
     projection = prd_templates.project(
         content,
         revision.presentation or prd_templates.builtins()[0],
