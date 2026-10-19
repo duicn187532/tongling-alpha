@@ -1868,7 +1868,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   </a>
                 </div>
               )}
-              <p>回答下方問題補齊空白章節，或直接編修需求；確認後建立不可覆寫的業務基準版本。</p>
+              <p>{revision?.status === "IN_REVIEW"
+                ? "回答下方問題補齊空白章節，或直接編修需求；確認後建立不可覆寫的業務基準版本。"
+                : "這是已定版或歷史版本，內容不可修改；要調整請加入新資訊開始修訂。"}</p>
             </div>
             {revision?.status === "IN_REVIEW" && (
               <button

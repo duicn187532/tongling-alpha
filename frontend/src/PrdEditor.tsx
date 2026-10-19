@@ -38,7 +38,7 @@ export function GapPanel({ revision, onChange }: { revision: any; onChange: (rev
     <p className="muted">回答下面的問題，AI 只會依你的回答整理成 PRD 條列；不知道的可以先略過，定版不會被擋住。</p>
     {open.map((gap) => <div className="gap-item" key={gap.field}>
       <label><strong>{gap.title}</strong> · {gap.question}
-        <textarea rows={2} value={answers[gap.field] || ""} onChange={(e) => setAnswers({ ...answers, [gap.field]: e.target.value })} />
+        <textarea rows={2} aria-label={`${gap.title}：${gap.question}`} value={answers[gap.field] || ""} onChange={(e) => setAnswers({ ...answers, [gap.field]: e.target.value })} />
       </label>
       <button className="primary" disabled={!!working || !(answers[gap.field] || "").trim()}
         onClick={() => void run(gap.field, async () => {

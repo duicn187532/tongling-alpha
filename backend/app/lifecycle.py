@@ -502,6 +502,13 @@ def render_docx(revision, content=None, version=None):
     from docx.shared import Inches, Pt
 
     content = content or revision.content
+    # A PRD reader needs document titles, not internal source ids.
+    from .db import Session as _Session, Source as _Source
+    with _Session() as lookup:
+        titles = {s.id: s.title for s in lookup.scalars(select(_Source))}
+
+    def sources(ids):
+        return "、".join(dict.fromkeys(titles.get(i, i) for i in ids or []))
     folder = DATA / "exports" / revision.id
     folder.mkdir(parents=True, exist_ok=True)
     doc = Document()
@@ -538,7 +545,7 @@ def render_docx(revision, content=None, version=None):
                     "\n" + row["detail"] if row.get("detail") else ""
                 )
                 if row.get("source_refs"):
-                    cells[2].text += "\n來源：" + ", ".join(row["source_refs"])
+                    cells[2].text += "\n來源：" + sources(row["source_refs"])
         for diagram in section["diagrams"]:
             source = diagram["mermaid"]
             if len(source) > 20000 or re_unsafe(source):
@@ -605,11 +612,11 @@ def render_docx(revision, content=None, version=None):
                     if item.get(field):
                         detail.append(f"{label}：" + "；".join(item[field]))
                 detail.append("需求：" + ", ".join(item.get("requirement_refs", [])))
-                detail.append("來源：" + ", ".join(item.get("source_refs", [])))
+                detail.append("來源：" + sources(item.get("source_refs", [])))
                 doc.add_paragraph(f"{item.get('id', '')} {item.get('name', '')}\n" + "\n".join(detail))
         doc.add_heading("技術影響判斷", 2)
         for item in technical.get("technical_impact", []):
-            doc.add_paragraph(f"{item['area']}：{'YES' if item['affected'] else 'NO'}；{item['rationale']}；來源：{', '.join(item['source_refs'])}")
+            doc.add_paragraph(f"{item['area']}：{'YES' if item['affected'] else 'NO'}；{item['rationale']}；來源：{sources(item['source_refs'])}")
         for spec in content.get("diagrams", []):
             if spec.get("generated_from") != "technical_model":
                 continue

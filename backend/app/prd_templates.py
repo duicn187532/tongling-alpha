@@ -266,7 +266,7 @@ def project(content, template, version="草稿"):
                 "成功指標：" + concise(x) for x in content.get("success_metrics", [])
             ]
             if content.get("change_analysis"):
-                block["paragraphs"].append("本次變更分析：" + content["change_analysis"].get("summary", ""))
+                # The review tally is app bookkeeping; the PRD keeps the current state.
                 block["paragraphs"] += ["現況：" + concise(x) for x in content.get("current_state", [])]
         elif key == "requirements":
             block["rows"] = [
