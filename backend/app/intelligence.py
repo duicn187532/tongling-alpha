@@ -167,6 +167,14 @@ never create a topic per sentence, field or detail. Background, motivation and s
 unless they constrain the solution. Prefer fewer, specific, decisive assertions over many fragments.
 Output language: Traditional Chinese."""
 
+MEETING_PROMPT = SYSTEM_PROMPT + """
+The source is a meeting transcript. Classify each assertion by what happened in the meeting:
+DECISION when participants explicitly agreed or the chair summarised it as concluded (總結、決議、同意、可以);
+ACTION_ITEM when a participant explicitly commits to a follow-up, keeping the stated owner and due date;
+OPEN_ITEM when a point is explicitly left undecided or pending confirmation (先不決定、待確認、再確認);
+QUESTION for a question raised without an answer; REQUIREMENT only for a stated need that was neither agreed
+nor rejected. When a closing summary restates earlier points, keep one assertion per topic."""
+
 
 def extract(
     chunks, config, existing_topics=(), *, timeout_seconds=180, max_tokens=2048
@@ -180,9 +188,10 @@ def extract(
             if any(not set(f.chunk_ids).issubset(allowed) for f in result.assertions):
                 raise ValueError("模型回傳不存在的證據引用")
 
-        task = "MEETING_FACT_EXTRACTION" if config.get("_meeting_extract") else "SOURCE_FACT_EXTRACTION"
+        meeting = bool(config.get("_meeting_extract"))
+        task = "MEETING_FACT_EXTRACTION" if meeting else "SOURCE_FACT_EXTRACTION"
         result = structured(
-            config, task, SYSTEM_PROMPT,
+            config, task, MEETING_PROMPT if meeting else SYSTEM_PROMPT,
             {"existing_topics": list(existing_topics), "source_document": chunks},
             FactResult, lambda: {"assertions": []}, validator=verify,
             timeout_seconds=timeout_seconds, max_tokens=max_tokens,

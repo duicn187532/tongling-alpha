@@ -389,7 +389,7 @@ export function V7Settings({
               task_to_role: {
                 TAG_EXTRACTION: "micro_worker", ENTITY_EXTRACTION: "micro_worker",
                 RELATION_EXTRACTION: "micro_worker", GRAPH_QUERY_SEED: "micro_worker",
-                SOURCE_FACT_EXTRACTION: "rag_worker", MEETING_FACT_EXTRACTION: "rag_worker",
+                SOURCE_FACT_EXTRACTION: "rag_worker", MEETING_FACT_EXTRACTION: "primary_reasoner",
                 AGENT_EVIDENCE_JUDGEMENT: "primary_reasoner",
                 GRAPH_REASONING: "primary_reasoner", ARCHITECTURE_IMPACT: "primary_reasoner",
                 PRD_ASSIST: "primary_reasoner", PEER_ANALYSIS: "primary_reasoner",
