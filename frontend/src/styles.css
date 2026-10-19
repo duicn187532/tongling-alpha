@@ -1288,3 +1288,5 @@ summary {
 .quality-proposal { display: grid; gap: 6px; margin: 8px 0; padding: 10px; border: 1px dashed var(--line, #ddd); border-radius: 8px; }
 .split-part { display: grid; gap: 4px; }
 .row-actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.sample-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }

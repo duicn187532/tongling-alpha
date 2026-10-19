@@ -726,6 +726,23 @@ function App({ isClient = false }: { isClient?: boolean }) {
   }, [guidanceBusy]);
   const [delegated, setDelegated] = useState(false);
   const [startOnCreate, setStartOnCreate] = useState(true);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleNote, setSampleNote] = useState("");
+  async function generateSample() {
+    setSampleBusy(true);
+    setSampleNote("");
+    try {
+      const sample = await api("/demo/sample-requirement", "POST", undefined, 150000);
+      setName(sample.name);
+      setBrief(sample.brief);
+      setGuidance(null);
+      setSampleNote(sample.warning || `AI 產生的虛構範例${sample.area ? `（${sample.area}）` : ""}，可以直接修改後建立。再按一次會換一個。`);
+    } catch (e) {
+      setSampleNote(`範例產生失敗：${(e as Error).message}`);
+    } finally {
+      setSampleBusy(false);
+    }
+  }
   const [initialMode, setInitialMode] = useState<"AGENT" | "MANUAL">("AGENT");
   const [composer, setComposer] = useState(""),
     [showActivity, setShowActivity] = useState(false),
@@ -2208,6 +2225,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </div>
         )}
         {homeOpen ? <ProjectHub isClient={isClient} onCreate={() => setCreateOpen(true)} onDemo={isClient ? undefined : applyDemo}
+          onSample={() => { setCreateOpen(true); void generateSample(); }}
           onOpen={(id, step) => { setPid(id); if (step) setPage(step); setHomeOpen(false); setMobileLeftOpen(false); }} /> : !project ? (
           <div className="welcome">
             <span className="eyebrow">TONG LING · PERSONAL WORKSPACE</span>
@@ -2638,6 +2656,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
           >
             <span className="eyebrow">A NEW BEGINNING</span>
             <h2>建立需求專案</h2>
+            <div className="sample-row">
+              <button disabled={sampleBusy || busy} onClick={() => void generateSample()}>
+                {sampleBusy ? "AI 正在想一個需求…" : "✦ AI 產生範例需求"}
+              </button>
+              <small className="muted">沒有現成需求？讓 AI 虛構一個來體驗完整流程。</small>
+            </div>
+            {sampleNote && <p role="status" className="feedback">{sampleNote}</p>}
             <label>
               專案名稱
               <input

@@ -867,6 +867,15 @@ def create_project(body: ProjectInput, db=Depends(get_db)):
     return public_project(p)
 
 
+@app.post("/api/demo/sample-requirement")
+def sample_requirement(db=Depends(get_db)):
+    """A fictional requirement to try the flow with; nothing is saved."""
+    from .sample_requirements import generate
+    config = settings(db)
+    db.rollback()  # the model call must not hold a transaction open
+    return generate(config)
+
+
 @app.post("/api/agent/guidance")
 def agent_guidance(body: GuidanceInput, db=Depends(get_db)):
     from .agent_guidance import suggest

@@ -17,10 +17,11 @@ const statusLabels: Record<string, string> = {
 };
 const milestoneNames = ["需求起點", "證據", "需求確認", "PRD 草稿", "業務基準"];
 
-export function ProjectHub({ onOpen, onCreate, onDemo, isClient }: {
+export function ProjectHub({ onOpen, onCreate, onDemo, onSample, isClient }: {
   onOpen: (id: string, step?: number) => void;
   onCreate: () => void;
   onDemo?: () => void;
+  onSample?: () => void;
   isClient: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -60,6 +61,7 @@ export function ProjectHub({ onOpen, onCreate, onDemo, isClient }: {
         <p>在這裡掌握所有需求專案、人工決策和待辦。文件、模型與公司服務可從外部接入；彤靈也能用內建知識庫在本機獨立工作。</p>
       </div>
       <div className="hub-hero-actions"><button className="primary" onClick={onCreate}>＋ 建立專案</button>
+        {onSample && <button onClick={onSample}>✦ AI 產生範例需求</button>}
         {!isClient && onDemo && <button onClick={onDemo}>✦ 套用範例</button>}</div>
     </div>
     <div className="hub-metrics" aria-label="工作概況">
