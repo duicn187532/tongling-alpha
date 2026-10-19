@@ -195,6 +195,7 @@ function ReviewCard({
       <h3>{row.topic}</h3>
       {proposal && proposal.current_state && proposal.status !== "ADD" && <p className="muted"><strong>現況：</strong>{proposal.current_state}</p>}
       <p><strong>{saved.action === "MODIFY" ? "修改後需求：" : "AI 建議需求："}</strong>{saved.action === "MODIFY" ? saved.statement : suggestion}</p>
+      {saved.action !== "MODIFY" && proposal?.unsourced?.length > 0 && <p className="feedback warning">AI 建議中有來源文件找不到的內容：{proposal.unsourced.slice(0, 6).join("、")}。採納前請確認出處，或用「修改…」改為待確認。</p>}
       {saved.action === "MODIFY" && saved.rationale && <p className="muted">修改說明：{saved.rationale}</p>}
       <details>
         <summary>依據 · {row.evidence.length} 筆</summary>

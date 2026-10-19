@@ -481,9 +481,14 @@ def _execute(project_id, run_id, epoch):
                         current_report = dict((save_project.state or {}).get("change_analysis") or {})
                         if current_report.get("fingerprint") == report.get("fingerprint"):
                             enhanced = {item["requirement_id"]: item for item in suggestions}
+                            from .faithfulness import project_sources_text, unsourced
+                            sources_text = project_sources_text(save_db, save_project)
                             for proposal in current_report.get("proposals", []):
                                 suggestion = enhanced.get(proposal["requirement_id"])
                                 if suggestion:
+                                    # Flag specifics the model added that no source contains.
+                                    proposal["unsourced"] = unsourced(" ".join(
+                                        [suggestion["formal_statement"]] + suggestion["acceptance_criteria"]), sources_text)
                                     proposal["proposed_requirement"] = {
                                         "statement": suggestion["formal_statement"],
                                         "acceptance_criteria": suggestion["acceptance_criteria"] or

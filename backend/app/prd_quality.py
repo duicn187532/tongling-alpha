@@ -38,7 +38,9 @@ def compound_clauses(statement):
     return acting if len(acting) >= 2 and len(verbs) >= 2 else []
 
 
-def check(content):
+def check(content, sources_text=None):
+    """Hints for a draft; with `sources_text`, also specifics no source supports."""
+    from .faithfulness import unsourced
     issues = []
 
     def add(code, severity, message, suggestion, requirement=None, text=""):
@@ -70,6 +72,11 @@ def check(content):
                 "用「前提／操作／結果」寫出主要成功情境與一個重要例外。", row)
         if not row.get("evidence") and not row.get("split_from"):
             add("NO_SOURCE", "建議", "沒有來源依據", "加入依據，或在決策中註明來源。", row)
+        if sources_text is not None:
+            missing = unsourced(" ".join([statement] + criteria.get(row["id"].split("::")[0], [])), sources_text)
+            if missing:
+                add("UNSOURCED", "提醒", f"來源文件中找不到：{'、'.join(missing[:6])}",
+                    "確認出處；沒有依據的數值或名稱請改為「待確認」或補上來源。", row)
         parts = compound_clauses(statement)
         if parts and not row.get("split_from"):
             add("COMPOUND", "建議", f"可能包含 {len(parts)} 件可各自驗收的事",
@@ -119,9 +126,15 @@ def register(app, get_db, get):
     from .intelligence import settings
     from .model_runtime import structured
 
+    def sources_for(db, revision):
+        from .db import Project
+        from .faithfulness import project_sources_text
+        return project_sources_text(db, get(db, Project, revision.project_id))
+
     @app.get("/api/prd-revisions/{rid}/quality")
     def quality(rid: str, db=Depends(get_db)):
-        return check(get(db, Revision, rid).content)
+        revision = get(db, Revision, rid)
+        return check(revision.content, sources_for(db, revision))
 
     @app.post("/api/prd-revisions/{rid}/requirements/{req_id}/improve")
     def improve(rid: str, req_id: str, body: ImproveInput, db=Depends(get_db)):
@@ -147,6 +160,13 @@ def register(app, get_db, get):
             proposal = {**fallback, "warning": f"模型改寫失敗：{type(exc).__name__}"}
         if config.get("provider") == "mock":
             proposal["warning"] = "目前為離線規則模式，無法產生改寫建議；請手動編修。"
+        else:
+            from .faithfulness import unsourced
+            missing = unsourced(" ".join([proposal["statement"]] + proposal.get("acceptance_criteria", [])),
+                                sources_for(db, revision))
+            if missing:
+                proposal["unsourced"] = missing
+                proposal["warning"] = f"建議中有來源找不到的內容：{'、'.join(missing[:6])}；採用前請確認。"
         return {**proposal, "problems": problems}
 
     @app.post("/api/prd-revisions/{rid}/requirements/{req_id}/split-suggestion")
