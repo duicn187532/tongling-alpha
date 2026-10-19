@@ -2405,6 +2405,11 @@ function App({ isClient = false }: { isClient?: boolean }) {
                     <h3>我先查了共用知識</h3>
                     <p>搜尋詞：{project.state.retrieval_queries.join("、")}。找到 {project.state.retrieval_results?.length || 0} 筆，
                       已把相關的 {project.sources.filter((src: any) => src.kind !== "REQUIREMENT_TEXT").length} 份加入本案依據；不相關的不會用來推論需求。</p>
+                    {project.state.evidence_contract?.roles?.length > 0 && <p className="muted">
+                      證據角色：{project.state.evidence_contract.roles.map((role: any) =>
+                        role.status === "COVERED" ? `${role.label} ✓` : `${role.label}（缺：${role.gap_reason}）`).join("、")}
+                      {project.state.evidence_contract.gaps?.length > 0 && `。${project.state.evidence_contract.note}`}
+                    </p>}
                     <div className="actions">
                       <button onClick={() => openStep(3)}>查看依據</button>
                       <button onClick={() => openStep(2)}>自己再搜尋</button>

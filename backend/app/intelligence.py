@@ -342,11 +342,19 @@ def explicitly_replaces(new, old):
             and bool(re.search(r"取代|改為|改成|不再適用|廢止|supersed|replace", new.get("statement", ""), re.I)))
 
 
+# Meeting records reach here only after the PM ticked them, so a stated need or
+# exclusion stays in force; a pending follow-up keeps the topic open; a bare
+# question does not undo an earlier decision.
+MEETING_VALIDITY = {"DECISION": "CURRENT", "CHANGE": "CURRENT", "REQUIREMENT": "CURRENT",
+                    "EXCLUDED": "CURRENT", "SYSTEM_CAPABILITY": "CURRENT",
+                    "OPEN_ITEM": "OPEN", "ACTION_ITEM": "OPEN"}
+
+
 def resolve_temporal(rows):
     ordered = [dict(x) for x in sorted(rows, key=lambda x: (
         x.get("meeting_date", ""), x.get("started_at", ""), x.get("index", 0)))]
     for index, item in enumerate(ordered):
-        item["validity"] = "CURRENT" if item["kind"] in {"DECISION", "CHANGE"} else "OPEN" if item["kind"] == "OPEN_ITEM" else "HISTORICAL"
+        item["validity"] = MEETING_VALIDITY.get(item["kind"], "HISTORICAL")
         for older in ordered[:index]:
             if explicitly_replaces(item, older):
                 older["validity"] = "SUPERSEDED"

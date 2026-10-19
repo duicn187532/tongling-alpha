@@ -242,3 +242,41 @@ def test_near_duplicate_topic_names_merge_but_distinct_ones_stay():
     assert mapping["薪資通知加密方式"] == "通知加密方式"
     assert mapping["撥薪通知紀錄保存"] == "撥薪通知紀錄保存"
     assert mapping["密碼傳遞方式"] == "密碼傳遞方式"
+
+
+def test_retiring_a_weak_practice_is_not_weakening_a_control():
+    from app.change_analysis import weakened_controls
+    # Stopping plaintext mail while keeping the audit trail strengthens controls.
+    assert weakened_controls("通知以明文寄送，保留稽核紀錄",
+                             "通知不再以明文寄送，改為加密附件，保留稽核紀錄", "MODIFY") == []
+    assert weakened_controls("交易需雙人覆核並留存稽核軌跡",
+                             "停止紙本覆核，改為系統雙人覆核並留存稽核軌跡", "MODIFY") == []
+    assert weakened_controls("附件密碼與通知同封寄送",
+                             "禁止與通知同封寄送附件密碼，改為簡訊另送", "MODIFY") == []
+    # Genuine loosening in the same clause as the control still needs a decision.
+    assert weakened_controls("登入需簡訊 OTP 驗證", "登入不需簡訊 OTP 驗證", "MODIFY") == ["驗證"]
+    assert weakened_controls("通知需加密附件寄送", "通知改為明文寄送", "MODIFY") == ["加密"]
+
+
+def test_loosening_a_control_filed_under_another_topic_still_needs_a_decision(client, project):
+    with Session.begin() as db:
+        p = db.get(Project, project["id"])
+        policy = ingest(db, "個資保護政策", [{"text": "帳號於通知中僅可顯示末四碼，其餘須遮蔽"}],
+                        kind="INTERNAL_POLICY", project=p)
+        goal = ingest(db, "本次需求", [{"text": "通知不再遮蔽帳號，改為顯示完整帳號"}],
+                      kind="REQUIREMENT_TEXT", project=p)
+        db.flush()
+        apply_analysis(db, p, {policy.id: [claim("帳號顯示方式", "帳號於通知中僅可顯示末四碼，其餘須遮蔽")],
+                               goal.id: [claim("完整帳號顯示", "通知不再遮蔽帳號，改為顯示完整帳號", kind="CHANGE")]})
+        report = p.state["change_analysis"]
+        assert any("遮蔽" in q["question"] for q in report["critical_questions"])
+
+
+def test_implied_loosening_names_the_control_it_undoes():
+    from app.change_analysis import implied_relaxations
+    assert implied_relaxations("通知改為顯示完整帳號") == {"遮蔽"}
+    assert implied_relaxations("登入免 OTP") == {"驗證"}
+    assert implied_relaxations("通知不再以明文寄送，改為加密附件") == set()
+    assert implied_relaxations("禁止以明文寄送") == set()
+    assert implied_relaxations("企業網銀撥薪入帳後，現行以明文 email 寄送通知") == set()
+    assert implied_relaxations("撥薪通知必須顯示完整帳號，不遮蔽任何部分") == {"遮蔽"}

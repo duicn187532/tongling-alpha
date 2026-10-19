@@ -7,6 +7,29 @@ from .knowledge_federation import agent_search, import_remote_evidence
 from .lifecycle import create_draft, interruption, resolve_interruptions
 from . import activity
 
+
+def needs_ai_review(db, project):
+    """R5-style gate: second-opinion model passes run only when something is at risk."""
+    report = (project.state or {}).get("change_analysis") or {}
+    if report.get("critical_questions"):
+        return True
+    if any(p.get("needs_review") and p.get("priority") == "HIGH" for p in report.get("proposals", [])):
+        return True
+    return any(row.status in {"OPEN", "CONFLICT"} or not row.evidence
+               for row in db.scalars(select(Requirement).where(Requirement.project_id == project.id))
+               if row.decision.get("action") not in {"ACCEPT", "MODIFY", "REJECT"})
+
+
+def clear_ai_review(project_id, epoch, reason):
+    """Drop stale second-opinion cards so the review page shows nothing outdated."""
+    with Session() as save_db:
+        review_project = save_db.get(Project, project_id)
+        if review_project and review_project.epoch == epoch:
+            state = {k: v for k, v in review_project.state.items() if k not in {"agent_judgement", "decision_advice"}}
+            review_project.state = state
+            log(save_db, project_id, "AGENT", reason)
+            save_db.commit()
+
 def requirement_text(db, project):
     """What the user asked for: the brief plus requirement texts added later."""
     parts = [project.description or ""]
@@ -192,9 +215,11 @@ def _execute(project_id, run_id, epoch):
                 # The Agent searches the shared library itself before analysis:
                 # local shared documents and any enabled company file server.
                 activity.stage("檢索共用知識庫", "以需求主題搜尋內建知識庫與公司檔案服務器")
+                contract = {}
                 hits, queries = agent_search(
                     db, project, requirement_text(db, project),
                     {**config, "_skip_graph_reasoning": True}, _retrieve_local,
+                    contract=contract,
                 )
                 added, imported, references, failures = [], [], [], []
                 for hit in hits:
@@ -222,8 +247,13 @@ def _execute(project_id, run_id, epoch):
                         db.add(Link(project_id=project_id, source_id=hit["source_id"]))
                         added.append(hit["source_id"])
                 ids += added
+                db.flush()
+                from .evidence_contract import assess
+                evidence_contract = {**assess(db, project, requirement_text(db, project), contract.get("attempts")),
+                                     "queries": contract.get("queries", [])}
                 project.state = {
                     **project.state,
+                    "evidence_contract": evidence_contract,
                     "retrieval_done": True,
                     "retrieval_queries": queries,
                     "retrieval_results": [{k: h.get(k) for k in (
@@ -507,7 +537,12 @@ def _execute(project_id, run_id, epoch):
                                         if proposal and row.decision.get("decided_by") == "AGENT_DELEGATED":
                                             row.decision = {**row.decision, "statement": proposal["proposed_requirement"]["statement"]}
                                     create_draft(save_db, save_project)
-        if enabled(config, "agent_split"):
+        with Session() as gate_db:
+            risky = needs_ai_review(gate_db, gate_db.get(Project, project_id))
+        if not risky and (enabled(config, "agent_split") or
+                          (config.get("model_router") or {}).get("decision", {}).get("mode") == "advisory"):
+            clear_ai_review(project_id, epoch, "沒有高風險或待釐清項目，略過 AI 證據審閱與 Decision 建議")
+        if risky and enabled(config, "agent_split"):
             activity.stage("Agent 證據審閱", "比對需求與來源，產生供人工審閱的建議")
             from .model_assist import judge_requirements
             try:
@@ -526,7 +561,7 @@ def _execute(project_id, run_id, epoch):
                         review_project.state = {**review_project.state, "agent_judgement": {
                             "status": "ERROR", "error": str(exc)[:300], "items": []}}
                         save_db.commit()
-        if (config.get("model_router") or {}).get("decision", {}).get("mode") == "advisory":
+        if risky and (config.get("model_router") or {}).get("decision", {}).get("mode") == "advisory":
             activity.stage("Decision 建議分析", "供人工參考，不會自動批准需求")
             from .decision_provider import advise_project
             try:

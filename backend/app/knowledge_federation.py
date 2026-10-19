@@ -276,15 +276,20 @@ def focus_queries(name, text, limit=3):
     return queries
 
 
-def agent_search(db, project, text, config, local_search, provider_factory=None):
+def agent_search(db, project, text, config, local_search, provider_factory=None, contract=None):
     """The Agent's own library search: one local pass with the full requirement
-    plus focused passes that also reach enabled company file servers."""
+    plus focused passes that also reach enabled company file servers.
+
+    With `contract` (a dict), evidence roles the request needs but the hits do
+    not cover get one targeted pass each; what each pass saw is recorded there.
+    """
     queries = focus_queries(project.name, text)
     passes = [(text or project.name, queries[0] if queries else project.name)]
     passes += [(query, query) for query in queries[1:]]
     order = {"KEY": 0, "SUPPORTING": 1, "CONTEXT": 2, "EXTERNAL_BENCHMARK": 3, "REJECTED": 4}
     best = {}
-    for local_query, remote_query in passes:
+
+    def run(local_query, remote_query, role=None):
         found = retrieve(db, local_query, project.id, config, local_search,
                          provider_factory=provider_factory, remote_query=remote_query)
         # Release SQLite's write lock (audit rows) before the next slow
@@ -294,9 +299,34 @@ def agent_search(db, project, text, config, local_search, provider_factory=None)
             current = best.get(hit["source_id"])
             if current is None or (order.get(hit["evidence_role"], 3), -hit.get("case_relevance_score", 0)) < (
                     order.get(current["evidence_role"], 3), -current.get("case_relevance_score", 0)):
-                best[hit["source_id"]] = {**hit, "matched_query": remote_query}
+                best[hit["source_id"]] = {**hit, "matched_query": remote_query,
+                                          **({"contract_role": role} if role else {})}
+        return found
+
+    for local_query, remote_query in passes:
+        run(local_query, remote_query)
     hits = sorted(best.values(), key=lambda h: (order.get(h["evidence_role"], 3), -h.get("case_relevance_score", 0)))
-    return hits[:max(config.get("top_k", 8), 8)], queries
+    limit = max(config.get("top_k", 8), 8)
+    if contract is not None:
+        from .evidence_contract import ROLES, MAX_ROLE_PASSES, assess, role_query
+        admitted = [h for h in hits[:limit] if h["evidence_role"] in {"KEY", "SUPPORTING"}]
+        linked_gaps = {r["role"] for r in assess(db, project, text)["roles"] if r["status"] == "GAP"}
+        missing = [role for role in ROLES if role in linked_gaps and not any(
+            re.search(ROLES[role][2], f"{h.get('title', '')} {h.get('text', '')}", re.I) for h in admitted)]
+        attempts = {}
+        for role in missing[:MAX_ROLE_PASSES]:
+            query = role_query(project.name, role)
+            found = run(query, query, role)
+            matching = [h for h in found if re.search(ROLES[role][2], f"{h.get('title', '')} {h.get('text', '')}", re.I)]
+            attempts[role] = ("ADMITTED" if any(h["evidence_role"] in {"KEY", "SUPPORTING"} for h in matching)
+                              else "CANDIDATES_REJECTED" if matching else "NONE_FOUND")
+        contract["attempts"] = attempts
+        contract["queries"] = [role_query(project.name, role) for role in attempts]
+        hits = sorted(best.values(), key=lambda h: (order.get(h["evidence_role"], 3), -h.get("case_relevance_score", 0)))
+        # Role passes may add evidence beyond the usual budget, one document per role.
+        extra = [h for h in hits[limit:] if h.get("contract_role")]
+        return hits[:limit] + extra[:MAX_ROLE_PASSES], queries
+    return hits[:limit], queries
 
 
 def _excerpt(content, query, size=1200):

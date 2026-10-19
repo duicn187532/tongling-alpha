@@ -378,14 +378,22 @@ export function V7Settings({
           <p>只影響新工作；進行中的 Agent 會沿用開始時保存的設定。切回「舊版」即可回退模型路由。</p>
           <button disabled={!models} onClick={() => {
             const available = new Set<string>(textModels);
-            const candidates: Record<string, string> = {
-              micro_worker: "qwen3.5:2b", rag_worker: "ministral-3:3b",
-              primary_reasoner: "gemma4:latest", agent_worker: "qwen3.5:2b",
+            // Preference order follows the EXP-01 benchmarks; only installed models are used.
+            const pick = (names: string[]) => names.find((name) => available.has(name));
+            const candidates: Record<string, string | undefined> = {
+              micro_worker: pick(["qwen3.5:2b"]), rag_worker: pick(["ministral-3:3b", "qwen3.5:4b"]),
+              primary_reasoner: pick(["gemma4:12b", "gemma4:latest"]), agent_worker: pick(["qwen3.5:2b"]),
             };
             const role_to_model = Object.fromEntries(Object.entries(candidates)
-              .filter(([, model]) => available.has(model)).map(([role, model]) => [role, { model }]));
+              .filter(([, model]) => model).map(([role, model]) => [role, { model }]));
+            const fallbacks: Record<string, string | undefined> = {
+              micro_worker: pick(["qwen3.5:4b"]), rag_worker: pick(["qwen3.5:4b"]),
+              primary_reasoner: pick(["gemma4:latest", "gemma4:12b"].filter((name) => name !== candidates.primary_reasoner)),
+            };
+            const fallback_chain = { ...(router.fallback_chain || {}),
+              ...Object.fromEntries(Object.entries(fallbacks).filter(([, model]) => model)) };
             setConfig({ ...config, graph_retrieval_enabled: true, model_router: {
-              ...router, schema_version: 2, mode: "active", role_to_model,
+              ...router, schema_version: 2, mode: "active", role_to_model, fallback_chain,
               task_to_role: {
                 TAG_EXTRACTION: "micro_worker", ENTITY_EXTRACTION: "micro_worker",
                 RELATION_EXTRACTION: "micro_worker", GRAPH_QUERY_SEED: "micro_worker",
@@ -400,7 +408,8 @@ export function V7Settings({
                 "evaluation", "trace",
               ].map((key) => [key, { enabled: true }])),
               decision: { mode: decisionModels.length ? "advisory" : "off",
-                model: decisionModels.includes("d1:latest") ? "d1:latest" : (decisionModels[0] || "d1:latest") },
+                model: ["nimble-v3:latest", "d1:latest"].find((name) => decisionModels.includes(name))
+                  || decisionModels[0] || "nimble-v3:latest" },
             } });
             setFeedback("已套用候選開關；模型只從剛探索到的本機清單選取。請保存後檢查路由。");
           }}>套用候選配置與開關</button>
@@ -446,10 +455,10 @@ export function V7Settings({
           </label>
           <p>Decision 自動放行須先完成金融案例校準，目前只提供建議。</p>
           <label>Decision 模型
-            <select value={router.decision?.model || "d1:latest"}
+            <select value={router.decision?.model || "nimble-v3:latest"}
               onChange={(e) => routerField("decision", { ...(router.decision || {}), model: e.target.value })}>
-              {!decisionModels.includes(router.decision?.model || "d1:latest") &&
-                <option value={router.decision?.model || "d1:latest"}>{router.decision?.model || "d1:latest"}（尚未查驗）</option>}
+              {!decisionModels.includes(router.decision?.model || "nimble-v3:latest") &&
+                <option value={router.decision?.model || "nimble-v3:latest"}>{router.decision?.model || "nimble-v3:latest"}（尚未查驗）</option>}
               {decisionModels.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </label>

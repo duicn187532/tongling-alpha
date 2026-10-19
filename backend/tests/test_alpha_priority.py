@@ -144,3 +144,16 @@ def test_same_condition_conflicts_but_distinct_condition_does_not():
     current, reopened, history = resolve_temporal([{**a, "kind": "DECISION", "meeting_date": "2026-10-01"}, later])
     assert not reopened and len(current) == 1 and current[0]["statement"] == "決議改為十萬"
     assert history[0]["validity"] == "SUPERSEDED"
+
+
+def test_confirmed_meeting_needs_and_exclusions_stay_in_force():
+    def fact(day, kind, statement):
+        return {"meeting_date": day, "kind": kind, "statement": statement}
+
+    current, reopened, _ = resolve_temporal([fact("2026-10-14", "REQUIREMENT", "客服需能查詢重送紀錄"),
+                                             fact("2026-10-14", "EXCLUDED", "行銷推播不納入本次範圍")])
+    assert {x["statement"] for x in current} == {"客服需能查詢重送紀錄", "行銷推播不納入本次範圍"}
+    assert not reopened
+    # A follow-up someone still owes keeps the topic open.
+    _, reopened, history = resolve_temporal([fact("2026-10-14", "ACTION_ITEM", "法遵下週三前回覆可否代填手機")])
+    assert reopened and history[0]["validity"] == "OPEN"

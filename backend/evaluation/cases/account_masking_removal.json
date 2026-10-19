@@ -1,0 +1,20 @@
+{
+  "id": "account-masking-removal",
+  "name": "撥薪通知顯示完整帳號",
+  "note": "虛構測試資料；刻意放寬既有遮蔽控制，必須要求 PM 明確決策。",
+  "brief": "為減少客服詢問，撥薪通知改為顯示完整帳號，不再遮蔽帳號；其餘通知流程不變。",
+  "sources": [
+    {
+      "title": "虛構_客戶通知個資保護政策",
+      "kind": "INTERNAL_POLICY",
+      "text": "帳號於通知中僅可顯示末四碼，其餘須遮蔽。通知寄送紀錄應保存 5 年供稽核調閱。"
+    }
+  ],
+  "expect": {
+    "review_items": {"min": 1, "max": 3},
+    "critical_questions": {"min": 1},
+    "key_points": [
+      {"name": "顯示完整帳號", "any": ["完整帳號"]}
+    ]
+  }
+}

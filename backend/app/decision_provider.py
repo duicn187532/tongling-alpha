@@ -15,14 +15,16 @@ def advise_project(db, project, config):
         return {"status": "OFF", "items": []}
     if setting.get("mode") != "advisory":
         raise ValueError("Decision 自動放行尚未完成校準")
-    selected = {"provider": "ollama", "endpoint": config.get("endpoint", ""), "model": setting.get("model", "d1:latest"),
+    selected = {"provider": "ollama", "endpoint": config.get("endpoint", ""), "model": setting.get("model", "nimble-v3:latest"),
                 "local_only": True}
     validate_endpoint(selected)
     info = model_info(selected)
     if "decision" not in info["capabilities"]:
         raise ValueError("CAPABILITY_MISMATCH：指定模型沒有 decision 能力")
-    rows = [row for row in db.scalars(select(Requirement).where(Requirement.project_id == project.id))
-            if row.decision.get("action") not in {"ACCEPT", "MODIFY", "REJECT"}][:8]
+    undecided = [row for row in db.scalars(select(Requirement).where(Requirement.project_id == project.id))
+                 if row.decision.get("action") not in {"ACCEPT", "MODIFY", "REJECT"}]
+    # Spend the advisory calls on the rows most likely to need a person.
+    rows = sorted(undecided, key=lambda row: (row.status not in {"OPEN", "CONFLICT"}, bool(row.evidence)))[:8]
     output = []
     for row in rows:
         started = time.monotonic()

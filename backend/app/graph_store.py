@@ -37,6 +37,11 @@ RELATIONS = [
     "SAME_TOPIC",
     "REFERENCES",
 ]
+# Structural edges reach documents but never carry a path further (EXP-02B typed path).
+STRUCTURAL = {"CONTAINS", "TAGGED_WITH", "MENTIONS", "PART_OF_PROJECT"}
+# A tag is weaker evidence of a relation than an extracted, quoted relation.
+RELATION_WEIGHT = {"TAGGED_WITH": 0.7, "MENTIONS": 0.9, "CONTAINS": 0.9}
+
 TAXONOMY = [
     "DOMAIN",
     "FUNCTION",
@@ -175,9 +180,13 @@ class SQLiteGraphStore:
                     continue
                 if e.origin in front or e.target in front:
                     other = e.target if e.origin in front else e.origin
+                    # Typed path: only semantic relations keep walking. A structural
+                    # edge (tag, mention, containment) ends the path at a document,
+                    # so shared tags cannot bridge unrelated documents.
                     if other not in found:
                         found[other] = distance
-                        following.add(other)
+                        if e.relation not in STRUCTURAL:
+                            following.add(other)
                     paths.append(
                         {
                             "edge_id": e.id,
@@ -186,6 +195,7 @@ class SQLiteGraphStore:
                             "target": e.target,
                             "source_ref": e.source_id,
                             "confidence": e.meta.get("confidence", 0.5),
+                            "quote": (e.meta.get("quote") or "")[:200],
                             "distance": distance,
                         }
                     )
@@ -336,7 +346,8 @@ def graph_search(db, query, project_id=None, top_k=3, hops=2):
             if not valid:
                 continue
             distance = min(p["distance"] for p in valid)
-            weight = score * max(p["confidence"] for p in valid) / (distance or 1)
+            weight = score * max(p["confidence"] * RELATION_WEIGHT.get(p["relation"], 1.0)
+                                  for p in valid) / (distance or 1)
             scores[sid] = max(scores.get(sid, 0), weight)
             explanations.setdefault(sid, []).append(
                 {"matched_node": label, "hop_distance": distance, "paths": valid[:4]}

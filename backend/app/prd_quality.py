@@ -38,9 +38,10 @@ def compound_clauses(statement):
     return acting if len(acting) >= 2 and len(verbs) >= 2 else []
 
 
-def check(content, sources_text=None):
-    """Hints for a draft; with `sources_text`, also specifics no source supports."""
-    from .faithfulness import unsourced
+def check(content, sources_text=None, request_text=None):
+    """Hints for a draft; with `sources_text`, also specifics no source supports;
+    with `request_text`, also parts of the request the draft never states."""
+    from .faithfulness import unsourced, uncovered
     issues = []
 
     def add(code, severity, message, suggestion, requirement=None, text=""):
@@ -84,6 +85,10 @@ def check(content, sources_text=None):
         if REVIEW_TOPICS.search(statement):
             add("REVIEW_UNIT", "資訊", "涉及個資、資安或法遵",
                 "建議送審查單位（法遵、風管、資安）確認。", row)
+    for item in uncovered(request_text, content) if request_text else []:
+        detail = f"（缺：{'、'.join(item['missing'][:3])}）" if item["missing"] else ""
+        add("UNCOVERED", "提醒", f"需求來源提到「{item['clause']}」{detail}，PRD 沒有寫到",
+            "確認是否遺漏；要做就補成需求或驗收條件，決定不做請列入範圍外。", text=item["clause"])
     from .prd_editor import gaps
     empty = [g["title"] for g in gaps(content) if not g["filled"]]
     if empty:
@@ -133,8 +138,11 @@ def register(app, get_db, get):
 
     @app.get("/api/prd-revisions/{rid}/quality")
     def quality(rid: str, db=Depends(get_db)):
+        from .db import Project
+        from .faithfulness import project_request_text
         revision = get(db, Revision, rid)
-        return check(revision.content, sources_for(db, revision))
+        project = get(db, Project, revision.project_id)
+        return check(revision.content, sources_for(db, revision), project_request_text(db, project))
 
     @app.post("/api/prd-revisions/{rid}/requirements/{req_id}/improve")
     def improve(rid: str, req_id: str, body: ImproveInput, db=Depends(get_db)):

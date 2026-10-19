@@ -69,3 +69,73 @@ def project_sources_text(db, project):
                              .where(Link.project_id == project.id)):
         texts.append(source.content or "")
     return "\n".join(texts)
+
+
+REQUEST_KINDS = {"REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT", "MEETING_RECORD"}
+CONSTRAINT = re.compile(r"不可|不得|禁止|不能|必須|須|需要|需|應|要求")
+CURRENT_STATE = re.compile(r"^(?:現行|目前|原本|過去|現況)")
+LABEL = re.compile(r"^[^：:，,]{1,8}[：:]\s*")
+# PRD fields that state what will be built; background and evidence quotes are excluded
+# because they repeat the request verbatim and would hide every omission.
+COVERAGE_FIELDS = ("requirements", "acceptance_criteria", "scope", "out_of_scope", "open_issues",
+                   "business_rules", "nonfunctional_requirements", "exceptions", "success_metrics",
+                   "risk_compliance_security", "actors", "permissions", "dependencies", "data_impact",
+                   "api_message_impact", "batch_integration_impact", "deployment_impact", "assumptions")
+TEXT_KEYS = ("statement", "description", "text", "rule", "item", "title")
+
+
+def project_request_text(db, project):
+    """What the PM asked for: the brief plus request documents and confirmed meetings."""
+    from .db import Link, Source
+    texts = [project.description or ""]
+    for source in db.scalars(select(Source).join(Link, Link.source_id == Source.id)
+                             .where(Link.project_id == project.id, Source.status == "ACTIVE",
+                                    Source.kind.in_(REQUEST_KINDS))):
+        if (source.content or "").strip() not in texts[0]:
+            texts.append(source.content or "")
+    return "\n".join(t for t in texts if t)
+
+
+def _flatten(value):
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [t for item in value for t in _flatten(item)]
+    if isinstance(value, dict):
+        return [t for key in TEXT_KEYS if key in value for t in _flatten(value[key])]
+    return []
+
+
+def prd_text(content):
+    return "\n".join(t for field in COVERAGE_FIELDS for t in _flatten(content.get(field)))
+
+
+def _bigrams(text):
+    chars = re.sub(r"[^\u4e00-\u9fff]", "", _norm(text))
+    return {chars[i:i + 2] for i in range(len(chars) - 1)}
+
+
+def uncovered(request_text, content, limit=5):
+    """Request clauses the PRD never states: a missing specific, or a constraint
+    whose wording is mostly absent. Advisory; deciding not to build it is fine."""
+    # "三次" in the PRD states the same thing as "3 次" in the request.
+    haystack = re.sub(r"([一二兩三四五六七八九十])(?=\s*(?:次|天|日|碼|位|個|年|秒|分鐘|小時|筆|人|件))",
+                      lambda m: str("一二三四五六七八九十".find(m.group(1)) + 1 if m.group(1) != "兩" else 2),
+                      prd_text(content))
+    grams = _bigrams(haystack)
+    found = []
+    for sentence in re.split(r"[。；;\n]", request_text or ""):
+        for clause in (c.strip(" ，,：:") for c in re.split(r"[，,]", sentence)):
+            body = LABEL.sub("", clause)  # "本次需求：…" — the label is not part of the ask
+            if len(body) < 6 or CURRENT_STATE.match(body):
+                continue
+            missing = unsourced(body, haystack)
+            if missing:
+                found.append({"clause": clause, "missing": missing})
+            elif not specifics(body) and CONSTRAINT.search(body.replace("需求", "")):
+                own = _bigrams(body)
+                if own and len(own & grams) / len(own) < 0.5:
+                    found.append({"clause": clause, "missing": []})
+            if len(found) >= limit:
+                return found
+    return found

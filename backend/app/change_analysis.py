@@ -21,15 +21,86 @@ RISK = re.compile(r"法遵|個資|資安|安全|加密|授權|風險|驗證|限�
 RELAX = re.compile(r"取消|移除|刪除|停止|不再|免除|不需|無需|改為明文|明文寄送|放寬|降低")
 
 
+# Retiring a weak practice ("不再以明文寄送", "停止紙本覆核") strengthens a control.
+WEAK_PRACTICE = re.compile(r"明文|紙本|人工|同封|一併寄送|預設密碼")
+NEGATION = re.compile(r"(?:不|禁止|不得|不可|避免|嚴禁)[^，。；;,]{0,4}$")
+CLAUSE = re.compile(r"[，。；;,\n]")
+
+
+def relaxing_clauses(text):
+    """Clauses that genuinely loosen something, ignoring negated weak practices."""
+    found = []
+    for clause in CLAUSE.split(text):
+        for match in RELAX.finditer(clause):
+            word, rest = match.group(), clause[match.end():]
+            if word in {"改為明文", "明文寄送"} and NEGATION.search(clause[:match.start()]):
+                continue
+            if word in {"取消", "移除", "刪除", "停止", "不再"} and WEAK_PRACTICE.search(rest):
+                continue
+            found.append(clause)
+            break
+    return found
+
+
+# Phrases that loosen a control without naming it ("顯示完整帳號" undoes masking).
+IMPLIED = [(re.compile(r"顯示完整|完整(?:帳號|卡號|身分證|證號)|全碼顯示|不(?:再)?(?:進行)?遮蔽"), "遮蔽"),
+           (re.compile(r"明碼|明文|不(?:再)?(?:進行)?加密"), "加密"),
+           (re.compile(r"免(?:除)?\s*(?:OTP|驗證|簡訊驗證)|不(?:需|必)\s*(?:OTP|驗證)"), "驗證")]
+
+
+def implied_relaxations(text):
+    found = set()
+    for clause in CLAUSE.split(text or ""):
+        for pattern, control in IMPLIED:
+            match = pattern.search(clause)
+            prefix = clause[:match.start()] if match else ""
+            # Skip negations ("禁止以明文") and descriptions of today ("現行以明文寄送").
+            if match and not NEGATION.search(prefix) and not re.search(
+                    r"(?:不再|停止|取消|移除|禁止)[^，。；;,]{0,6}$", prefix) and not re.search(
+                    r"現行|目前|原本|過去|現況|原為", prefix):
+                found.add(control)
+    return found
+
+
+def _flag_cross_topic_relaxation(proposals, critical):
+    """A loosening clause can name a control filed under another topic
+    (「不再遮蔽帳號」 vs the policy topic 「帳號顯示方式」). Check it against every
+    current rule in the case, not only the one this proposal was paired with."""
+    flagged = {q["requirement_id"] for q in critical}
+    for proposal in proposals:
+        if proposal["requirement_id"] in flagged or proposal["status"] not in {"ADD", "MODIFY", "REMOVE"}:
+            continue
+        terms = {t for clause in relaxing_clauses(proposal["target_state"]) for t in RISK.findall(clause)}
+        terms |= implied_relaxations(proposal["target_state"])
+        # Prefer standing rules (background topics) when quoting what is in force.
+        # The proposal's own paired rule counts too; standing rules are quoted first.
+        rules = sorted((other for other in proposals if terms & set(RISK.findall(other["current_state"]))),
+                       key=lambda other: (other["status"] != "CONTEXT", other is proposal))
+        if not terms or not rules:
+            continue
+        weakened = sorted(terms & {t for rule in rules for t in RISK.findall(rule["current_state"])})
+        critical.append({
+            "requirement_id": proposal["requirement_id"], "topic": proposal["name"], "reason": "HIGH_RISK_CHANGE",
+            "question": (f"{proposal['name']} 的變更會移除或放寬「{'、'.join(weakened)}」控制"
+                         f"（現行：{rules[0]['current_state'][:60]}）；請確認是否接受此風險。"),
+            "options": [], "source_refs": sorted({ref.get("source_id") for rule in [proposal, *rules]
+                                                  for ref in rule["evidence_uncertainty"]["references"]
+                                                  if ref.get("source_id")})})
+        flagged.add(proposal["requirement_id"])
+
+
 def weakened_controls(before, after, status):
     """Controls the change removes or relaxes. A target that simply does not
     repeat a control (it describes only what changes) does not weaken it."""
     dropped = sorted(set(RISK.findall(before)) - set(RISK.findall(after)))
     if status == "REMOVE":
         return dropped or sorted(set(RISK.findall(before)))
-    if not RELAX.search(after):
+    clauses = relaxing_clauses(after)
+    if not clauses:
         return []
-    return dropped or sorted(set(RISK.findall(before)) & set(RISK.findall(after)))
+    # A control that survives counts only when the loosening wording sits in its own clause.
+    kept = set(RISK.findall(before)) & {term for clause in clauses for term in RISK.findall(clause)}
+    return dropped or sorted(kept)
 
 
 REVIEW_STATUSES = {"ADD", "MODIFY", "REMOVE", "TRUE_CONFLICT", "UNSUPPORTED", "UNKNOWN"}
@@ -214,6 +285,7 @@ def build_report(db, project):
                     "decision": row.decision}
         proposals.append(proposal)
     _pair_current_state(proposals, critical)
+    _flag_cross_topic_relaxation(proposals, critical)
     # Fold proposals asking for the same target into the first one.
     critical_ids = {q["requirement_id"] for q in critical}
     kept = []
