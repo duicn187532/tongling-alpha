@@ -1183,7 +1183,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </button>
         </div>
         <p className="muted">
-          PDF、Word、PowerPoint、Excel、CSV、TXT、Markdown、VTT · 每檔 30 MB
+          PDF、Word、PowerPoint（含表格、備註與圖片）、Excel、CSV、TXT、Markdown、VTT、畫面圖片 · 每檔 30 MB
         </p>
         {!isClient && <div className="row">
           <input
@@ -2496,7 +2496,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           hidden
           ref={uploadRef}
           type="file"
-          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.vtt"
+          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.vtt,.png,.jpg,.jpeg,.webp"
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) act(() => upload(f), "文件已解析並保存");

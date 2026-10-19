@@ -79,7 +79,7 @@ export function KnowledgeManager({ config, setConfig, act, onOpenFolder }: Props
             const result = await api("/workspace/folder/scan", "POST"); await refresh();
             setFeedback(result.message);
           })}>重新讀取資料夾</button></div>
-        <label>新增共用文件<input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md" disabled={!!busy} onChange={(e) => {
+        <label>新增共用文件<input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" disabled={!!busy} onChange={(e) => {
           const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
           void run("正在解析文件", async () => { const form = new FormData(); form.append("file", file); form.append("kind", "BUSINESS_KNOWLEDGE");
             await api("/knowledge/upload", "POST", form); await refresh(); setFeedback(`已加入共用知識庫：${file.name}`); });

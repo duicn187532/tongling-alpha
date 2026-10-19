@@ -1125,6 +1125,9 @@ def upload_common(file, kind, db, project=None):
     data = file.file.read(30 * 1024 * 1024 + 1)
     name = Path(file.filename or "upload.txt").name
     blocks = parse_file(name, data)
+    # Wireframes and slide pictures are read by a vision model (AI-11).
+    from .vision import image_blocks
+    blocks += image_blocks(name, data, settings(db))
     stored = FileUploadProvider().store(name, data)
     return serialize(
         ingest(db, name, blocks, "FILE_UPLOAD", kind, project, {"object_id": stored})
