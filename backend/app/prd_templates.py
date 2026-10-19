@@ -132,7 +132,6 @@ def chosen(db):
 
 def canonical_v2(content):
     """Populate sourced fields conservatively; absence remains explicit, never inferred compliance."""
-    import re
 
     reqs = content["requirements"]
     for r in reqs:
@@ -145,39 +144,12 @@ def canonical_v2(content):
         r.setdefault("business_rule_refs", [])
         r.setdefault("acceptance_refs", [])
 
-    def matches(pattern, field):
-        return [
-            {
-                "requirement_id": r["id"],
-                "description": ("可能受影響，具體介面／電文／資料異動待 SA 依技術來源確認：" + r["statement"])
-                               if field in {"api_message_impact", "data_impact", "batch_integration_impact"}
-                               and not any(f.get("source_kind") == "TECH_SPEC" for f in r.get("evidence", []))
-                               else r["statement"],
-                **({"status": "SA_CONFIRMATION_REQUIRED" if not any(f.get("source_kind") == "TECH_SPEC" for f in r.get("evidence", []))
-                              else "SOURCE_BACKED"}
-                   if field in {"api_message_impact", "data_impact", "batch_integration_impact"} else {}),
-                "source_refs": r["evidence_refs"],
-            }
-            for r in reqs
-            if re.search(pattern, r["topic"] + " " + r["statement"], re.I)
-        ]
-
-    for field, pattern in {
-        # Business rules, controls and NFRs are not copied from requirement
-        # text by keyword (that only repeated each requirement); the PM fills
-        # them through the PRD gap questions instead.
-        "data_impact": "資料|保存|欄位|data|database",
-        "api_message_impact": "API|電文|介面|interface",
-        "batch_integration_impact": "批次|排程|整合|batch",
-    }.items():
-        # Refresh requirement-derived rows when a new revision changes a decision.
-        independent = [
-            x
-            for x in content.get(field, [])
-            if not isinstance(x, dict) or not x.get("requirement_id")
-        ]
-        content[field] = independent + matches(pattern, field)
-    for field in ("business_rules", "risk_compliance_security", "nonfunctional_requirements"):
+    # Rules, controls, NFRs and system/data impacts are no longer copied from
+    # requirement text by keyword (that only repeated each requirement). The PM
+    # fills sections through gap questions; impacts come from the SA technical
+    # model as a per-requirement matrix.
+    for field in ("business_rules", "risk_compliance_security", "nonfunctional_requirements",
+                  "data_impact", "api_message_impact", "batch_integration_impact"):
         # Drop rows an older version copied from requirement text by keyword.
         content[field] = [x for x in content.get(field, [])
                           if not (isinstance(x, dict) and x.get("requirement_id") and not x.get("decision"))]
@@ -324,6 +296,12 @@ def project(content, template, version="草稿"):
                 for item in content.get("change_scope", [])
             ]
         if key == "systems":
+            from .technical_delivery import impact_matrix
+            matrix = impact_matrix(content)
+            if matrix is None:
+                block["paragraphs"].insert(0, "尚無 SA 技術模型；在「IT 交付」由 SA 文件產生後，這裡會列出每條需求影響的系統、介面與資料。")
+            else:
+                block["rows"] = matrix
             block["diagrams"] = [
                 d for d in content.get("diagrams", []) if d["type"] != "FUNCTIONAL"
             ]

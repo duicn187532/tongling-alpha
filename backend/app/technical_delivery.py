@@ -78,6 +78,43 @@ class TechnicalModel(BaseModel):
 
 
 AREAS = {"SYSTEM", "INTERFACE", "DATA", "FLOW", "SECURITY", "OPERATIONS"}
+
+
+def impact_matrix(content):
+    """Rows of requirement -> systems, interfaces and data from the SA model.
+
+    Mapping uses the requirement_refs the technical model already records;
+    nothing is inferred from wording. None when there is no technical model.
+    """
+    model = content.get("technical_model") or {}
+    groups = (("system_components", "系統"), ("interface_contracts", "介面"), ("data_changes", "資料"))
+    if not any(model.get(key) for key, _ in groups):
+        return None
+
+    def label(key, item):
+        if key == "interface_contracts" and (item.get("from_system") or item.get("to_system")):
+            return f"{item.get('from_system') or '?'}→{item.get('to_system') or '?'}（{item['name']}）"
+        return item["name"]
+
+    rows, mapped = [], set()
+    for requirement in content.get("requirements", []):
+        ids = {requirement["id"], requirement["id"].split("::")[0]}
+        parts, refs = [], set()
+        for key, title in groups:
+            hits = [item for item in model.get(key, []) if ids & set(item.get("requirement_refs") or [])]
+            if hits:
+                parts.append(f"{title}：" + "、".join(label(key, item) for item in hits))
+                refs |= {ref for item in hits for ref in item.get("source_refs", [])}
+                mapped |= {(key, item["id"]) for item in hits}
+        rows.append({"id": "REQ-" + requirement["id"][:8], "title": requirement["topic"],
+                     "description": "；".join(parts) if parts else "技術模型未標示受影響的系統、介面或資料，請 SA 確認是否無影響。",
+                     "source_refs": sorted(refs)})
+    orphans = [label(key, item) for key, _ in groups for item in model.get(key, []) if (key, item["id"]) not in mapped]
+    if orphans:
+        rows.append({"id": "—", "title": "未對應到需求的技術項目",
+                     "description": "、".join(orphans) + "。請在技術模型中標註對應需求，或確認是否屬於本次範圍。",
+                     "source_refs": []})
+    return rows
 DIAGRAM_TYPES = ("BUSINESS_RULE_FLOW", "SYSTEM_SEQUENCE", "SYSTEM_ARCHITECTURE")
 
 
