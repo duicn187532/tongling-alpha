@@ -423,7 +423,37 @@ def extract_sources(db, project, source_ids, config):
     return results
 
 
+def _bigrams(text):
+    text = re.sub(r"\s+", "", text or "")
+    return {text[i:i + 2] for i in range(len(text) - 1)} or {text}
+
+
+def canonical_topics(names, existing=()):
+    """Map near-duplicate topic names onto one name.
+
+    Models rename the same capability between batches ("通知加密方式",
+    "薪資通知加密方式"); bigram Jaccard >= 0.6 merges those while keeping
+    related but distinct topics ("撥薪通知" vs "撥薪通知紀錄保存") apart.
+    Existing project topics win so earlier decisions stay attached.
+    """
+    canon, mapping = list(existing), {}
+    for name in names:
+        if name in mapping:
+            continue
+        grams = _bigrams(name)
+        match = next((c for c in canon if c == name or
+                      len(grams & _bigrams(c)) / len(grams | _bigrams(c)) >= 0.6), None)
+        mapping[name] = match or name
+        if not match:
+            canon.append(name)
+    return mapping
+
+
 def apply_analysis(db, project, extracted):
+    existing = list(db.scalars(select(Requirement.topic).where(Requirement.project_id == project.id)))
+    mapping = canonical_topics([f["topic"] for facts in extracted.values() for f in facts], existing)
+    extracted = {sid: [{**f, "topic": mapping.get(f["topic"], f["topic"])} for f in facts]
+                 for sid, facts in extracted.items()}
     affected = set()
     for source_id, facts in extracted.items():
         old = list(

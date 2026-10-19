@@ -234,3 +234,11 @@ def test_not_repeating_a_control_is_not_weakening_it():
     assert weakened_controls(before, "通知改為加密 PDF 附件", "MODIFY") == []
     assert weakened_controls(before, "通知改為明文寄送，不再遮蔽帳號", "MODIFY") == ["遮蔽"]
     assert weakened_controls(before, "", "REMOVE") == ["遮蔽"]
+
+
+def test_near_duplicate_topic_names_merge_but_distinct_ones_stay():
+    from app.intelligence import canonical_topics
+    mapping = canonical_topics(["薪資通知加密方式", "撥薪通知紀錄保存", "密碼傳遞方式"], existing=["通知加密方式", "撥薪通知"])
+    assert mapping["薪資通知加密方式"] == "通知加密方式"
+    assert mapping["撥薪通知紀錄保存"] == "撥薪通知紀錄保存"
+    assert mapping["密碼傳遞方式"] == "密碼傳遞方式"
