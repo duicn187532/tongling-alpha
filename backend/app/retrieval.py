@@ -79,12 +79,8 @@ def _retrieve_local(db, query, project_id, config, strategy=None, source_ids=Non
         graph_hits = graph_search(db, query, project_id,
                                   config.get("graph_document_top_k", 3),
                                   config.get("graph_hop_limit", 2))
-        explanations = {}
-        try:
-            explanations = explain_graph(config, query, graph_hits, project_id)
-        except Exception as exc:
-            explanations = {"_error": f"{type(exc).__name__}: {str(exc)[:200]}"}
         by_id = {hit["source_id"]: hit for hit in ranked}
+        graph_only = set()
         query_terms = set(tokens(query))
         for graph_hit in graph_hits:
             sid = graph_hit["source_id"]
@@ -112,8 +108,21 @@ def _retrieve_local(db, query, project_id, config, strategy=None, source_ids=Non
                 }
                 ranked.append(hit)
                 by_id[sid] = hit
-            if sid in explanations:
-                hit["graph_reasoning"] = explanations[sid]
+                graph_only.add(sid)
+        # The model explains only graph-only documents that passed admission; hits
+        # already found by BM25/vector or rejected here do not need a reasoning call.
+        explain = [h for h in graph_hits if h["source_id"] in graph_only
+                   and by_id[h["source_id"]].get("evidence_role") != "REJECTED"]
+        explanations = {}
+        if explain:
+            try:
+                explanations = explain_graph(config, query, explain, project_id)
+            except Exception as exc:
+                explanations = {"_error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        for graph_hit in explain:
+            hit = by_id[graph_hit["source_id"]]
+            if graph_hit["source_id"] in explanations:
+                hit["graph_reasoning"] = explanations[graph_hit["source_id"]]
             if "_error" in explanations:
                 hit["graph_reasoning_error"] = explanations["_error"]
         return ranked

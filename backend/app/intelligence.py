@@ -167,6 +167,14 @@ never create a topic per sentence, field or detail. Background, motivation and s
 unless they constrain the solution. Prefer fewer, specific, decisive assertions over many fragments.
 Output language: Traditional Chinese."""
 
+MEETING_PROMPT = SYSTEM_PROMPT + """
+The source is a meeting transcript. Classify each assertion by what happened in the meeting:
+DECISION when participants explicitly agreed or the chair summarised it as concluded (總結、決議、同意、可以);
+ACTION_ITEM when a participant explicitly commits to a follow-up, keeping the stated owner and due date;
+OPEN_ITEM when a point is explicitly left undecided or pending confirmation (先不決定、待確認、再確認);
+QUESTION for a question raised without an answer; REQUIREMENT only for a stated need that was neither agreed
+nor rejected. When a closing summary restates earlier points, keep one assertion per topic."""
+
 
 def extract(
     chunks, config, existing_topics=(), *, timeout_seconds=180, max_tokens=2048
@@ -180,9 +188,10 @@ def extract(
             if any(not set(f.chunk_ids).issubset(allowed) for f in result.assertions):
                 raise ValueError("模型回傳不存在的證據引用")
 
-        task = "MEETING_FACT_EXTRACTION" if config.get("_meeting_extract") else "SOURCE_FACT_EXTRACTION"
+        meeting = bool(config.get("_meeting_extract"))
+        task = "MEETING_FACT_EXTRACTION" if meeting else "SOURCE_FACT_EXTRACTION"
         result = structured(
-            config, task, SYSTEM_PROMPT,
+            config, task, MEETING_PROMPT if meeting else SYSTEM_PROMPT,
             {"existing_topics": list(existing_topics), "source_document": chunks},
             FactResult, lambda: {"assertions": []}, validator=verify,
             timeout_seconds=timeout_seconds, max_tokens=max_tokens,
@@ -333,11 +342,19 @@ def explicitly_replaces(new, old):
             and bool(re.search(r"取代|改為|改成|不再適用|廢止|supersed|replace", new.get("statement", ""), re.I)))
 
 
+# Meeting records reach here only after the PM ticked them, so a stated need or
+# exclusion stays in force; a pending follow-up keeps the topic open; a bare
+# question does not undo an earlier decision.
+MEETING_VALIDITY = {"DECISION": "CURRENT", "CHANGE": "CURRENT", "REQUIREMENT": "CURRENT",
+                    "EXCLUDED": "CURRENT", "SYSTEM_CAPABILITY": "CURRENT",
+                    "OPEN_ITEM": "OPEN", "ACTION_ITEM": "OPEN"}
+
+
 def resolve_temporal(rows):
     ordered = [dict(x) for x in sorted(rows, key=lambda x: (
         x.get("meeting_date", ""), x.get("started_at", ""), x.get("index", 0)))]
     for index, item in enumerate(ordered):
-        item["validity"] = "CURRENT" if item["kind"] in {"DECISION", "CHANGE"} else "OPEN" if item["kind"] == "OPEN_ITEM" else "HISTORICAL"
+        item["validity"] = MEETING_VALIDITY.get(item["kind"], "HISTORICAL")
         for older in ordered[:index]:
             if explicitly_replaces(item, older):
                 older["validity"] = "SUPERSEDED"
@@ -423,7 +440,37 @@ def extract_sources(db, project, source_ids, config):
     return results
 
 
+def _bigrams(text):
+    text = re.sub(r"\s+", "", text or "")
+    return {text[i:i + 2] for i in range(len(text) - 1)} or {text}
+
+
+def canonical_topics(names, existing=()):
+    """Map near-duplicate topic names onto one name.
+
+    Models rename the same capability between batches ("通知加密方式",
+    "薪資通知加密方式"); bigram Jaccard >= 0.6 merges those while keeping
+    related but distinct topics ("撥薪通知" vs "撥薪通知紀錄保存") apart.
+    Existing project topics win so earlier decisions stay attached.
+    """
+    canon, mapping = list(existing), {}
+    for name in names:
+        if name in mapping:
+            continue
+        grams = _bigrams(name)
+        match = next((c for c in canon if c == name or
+                      len(grams & _bigrams(c)) / len(grams | _bigrams(c)) >= 0.6), None)
+        mapping[name] = match or name
+        if not match:
+            canon.append(name)
+    return mapping
+
+
 def apply_analysis(db, project, extracted):
+    existing = list(db.scalars(select(Requirement.topic).where(Requirement.project_id == project.id)))
+    mapping = canonical_topics([f["topic"] for facts in extracted.values() for f in facts], existing)
+    extracted = {sid: [{**f, "topic": mapping.get(f["topic"], f["topic"])} for f in facts]
+                 for sid, facts in extracted.items()}
     affected = set()
     for source_id, facts in extracted.items():
         old = list(

@@ -30,6 +30,20 @@ def _wait(client, pid, timeout):
     raise TimeoutError("分析未在時限內完成")
 
 
+def _confirm_meeting(client, pid, meeting, timeout):
+    """Add a meeting, let the model sort it, and confirm every item as a PM would."""
+    row = client.post(f"/api/projects/{pid}/meetings", json=meeting).json()
+    assert client.post(f"/api/meetings/{row['id']}/analyze").status_code == 200
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = client.get(f"/api/meetings/{row['id']}").json()
+        if row["status"] != "ANALYZING":
+            break
+        time.sleep(1)
+    if row["status"] == "ANALYZED":
+        client.post(f"/api/meetings/{row['id']}/confirm", json={})
+
+
 def run_case(client, case, timeout=900):
     """Analyze a case end to end and return measurements (no pass/fail)."""
     started = time.monotonic()
@@ -39,6 +53,8 @@ def run_case(client, case, timeout=900):
         response = client.post(f"/api/projects/{pid}/requirement-text",
                                json={"title": source["title"], "text": source["text"], "kind": source["kind"]})
         assert response.status_code == 200, response.text
+    for meeting in case.get("meetings", []):
+        _confirm_meeting(client, pid, meeting, timeout)
     assert client.post(f"/api/projects/{pid}/analysis/run").status_code == 200
     detail = _wait(client, pid, timeout)
     report = detail["state"]["change_analysis"]
@@ -68,6 +84,8 @@ def run_case(client, case, timeout=900):
         "criteria_coverage": round(sum(r["id"] in with_criteria for r in requirements) / max(1, len(requirements)), 2),
         "quality_score": quality["score"] if quality else None,
         "quality_counts": quality["counts"] if quality else None,
+        "uncovered": [i["text"] for i in (quality or {}).get("issues", []) if i["code"] == "UNCOVERED"],
+        "evidence_gaps": detail["state"].get("evidence_contract", {}).get("gaps", []),
         "review_rejected": reviewed.status_code != 200 and reviewed.text[:200],
     }
 
@@ -76,11 +94,16 @@ def judge(case, run):
     """Advisory verdict per expectation; used to compare runs, not to gate."""
     low, high = case["expect"]["review_items"]["min"], case["expect"]["review_items"]["max"]
     covered = sum(run["key_points"].values())
-    return {
+    verdict = {
         "review_items_in_range": low <= run["review_items"] <= high,
         "fragmented": run["review_items"] > high,
         "key_point_coverage": f"{covered}/{len(run['key_points'])}",
     }
+    critical = case["expect"].get("critical_questions")
+    if critical:
+        verdict["critical_in_range"] = (critical.get("min", 0) <= run["critical_questions"]
+                                        <= critical.get("max", 99))
+    return verdict
 
 
 def stability(runs):

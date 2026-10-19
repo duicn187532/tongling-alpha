@@ -195,6 +195,7 @@ function ReviewCard({
       <h3>{row.topic}</h3>
       {proposal && proposal.current_state && proposal.status !== "ADD" && <p className="muted"><strong>現況：</strong>{proposal.current_state}</p>}
       <p><strong>{saved.action === "MODIFY" ? "修改後需求：" : "AI 建議需求："}</strong>{saved.action === "MODIFY" ? saved.statement : suggestion}</p>
+      {saved.action !== "MODIFY" && proposal?.unsourced?.length > 0 && <p className="feedback warning">AI 建議中有來源文件找不到的內容：{proposal.unsourced.slice(0, 6).join("、")}。採納前請確認出處，或用「修改…」改為待確認。</p>}
       {saved.action === "MODIFY" && saved.rationale && <p className="muted">修改說明：{saved.rationale}</p>}
       <details>
         <summary>依據 · {row.evidence.length} 筆</summary>
@@ -725,6 +726,23 @@ function App({ isClient = false }: { isClient?: boolean }) {
   }, [guidanceBusy]);
   const [delegated, setDelegated] = useState(false);
   const [startOnCreate, setStartOnCreate] = useState(true);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleNote, setSampleNote] = useState("");
+  async function generateSample() {
+    setSampleBusy(true);
+    setSampleNote("");
+    try {
+      const sample = await api("/demo/sample-requirement", "POST", undefined, 150000);
+      setName(sample.name);
+      setBrief(sample.brief);
+      setGuidance(null);
+      setSampleNote(sample.warning || `AI 產生的虛構範例${sample.area ? `（${sample.area}）` : ""}，可以直接修改後建立。再按一次會換一個。`);
+    } catch (e) {
+      setSampleNote(`範例產生失敗：${(e as Error).message}`);
+    } finally {
+      setSampleBusy(false);
+    }
+  }
   const [initialMode, setInitialMode] = useState<"AGENT" | "MANUAL">("AGENT");
   const [composer, setComposer] = useState(""),
     [showActivity, setShowActivity] = useState(false),
@@ -1182,7 +1200,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </button>
         </div>
         <p className="muted">
-          PDF、Word、PowerPoint、Excel、CSV、TXT、Markdown、VTT · 每檔 30 MB
+          PDF、Word、PowerPoint（含表格、備註與圖片）、Excel、CSV、TXT、Markdown、VTT、畫面圖片 · 每檔 30 MB
         </p>
         {!isClient && <div className="row">
           <input
@@ -2207,6 +2225,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </div>
         )}
         {homeOpen ? <ProjectHub isClient={isClient} onCreate={() => setCreateOpen(true)} onDemo={isClient ? undefined : applyDemo}
+          onSample={() => { setCreateOpen(true); void generateSample(); }}
           onOpen={(id, step) => { setPid(id); if (step) setPage(step); setHomeOpen(false); setMobileLeftOpen(false); }} /> : !project ? (
           <div className="welcome">
             <span className="eyebrow">TONG LING · PERSONAL WORKSPACE</span>
@@ -2386,6 +2405,11 @@ function App({ isClient = false }: { isClient?: boolean }) {
                     <h3>我先查了共用知識</h3>
                     <p>搜尋詞：{project.state.retrieval_queries.join("、")}。找到 {project.state.retrieval_results?.length || 0} 筆，
                       已把相關的 {project.sources.filter((src: any) => src.kind !== "REQUIREMENT_TEXT").length} 份加入本案依據；不相關的不會用來推論需求。</p>
+                    {project.state.evidence_contract?.roles?.length > 0 && <p className="muted">
+                      證據角色：{project.state.evidence_contract.roles.map((role: any) =>
+                        role.status === "COVERED" ? `${role.label} ✓` : `${role.label}（缺：${role.gap_reason}）`).join("、")}
+                      {project.state.evidence_contract.gaps?.length > 0 && `。${project.state.evidence_contract.note}`}
+                    </p>}
                     <div className="actions">
                       <button onClick={() => openStep(3)}>查看依據</button>
                       <button onClick={() => openStep(2)}>自己再搜尋</button>
@@ -2495,7 +2519,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           hidden
           ref={uploadRef}
           type="file"
-          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.vtt"
+          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.vtt,.png,.jpg,.jpeg,.webp"
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) act(() => upload(f), "文件已解析並保存");
@@ -2637,6 +2661,13 @@ function App({ isClient = false }: { isClient?: boolean }) {
           >
             <span className="eyebrow">A NEW BEGINNING</span>
             <h2>建立需求專案</h2>
+            <div className="sample-row">
+              <button disabled={sampleBusy || busy} onClick={() => void generateSample()}>
+                {sampleBusy ? "AI 正在想一個需求…" : "✦ AI 產生範例需求"}
+              </button>
+              <small className="muted">沒有現成需求？讓 AI 虛構一個來體驗完整流程。</small>
+            </div>
+            {sampleNote && <p role="status" className="feedback">{sampleNote}</p>}
             <label>
               專案名稱
               <input

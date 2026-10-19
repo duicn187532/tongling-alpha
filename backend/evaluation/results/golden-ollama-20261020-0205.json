@@ -1,0 +1,266 @@
+{
+  "provider": "ollama",
+  "at": "2026-10-20 01:53",
+  "cases": [
+    {
+      "case": "account-masking-removal",
+      "runs": [
+        {
+          "case": "account-masking-removal",
+          "seconds": 65.8,
+          "model_status": "COMPLETE",
+          "requirements_total": 5,
+          "review_items": 2,
+          "critical_questions": 1,
+          "review_topics": [
+            "其他通知流程保持不變",
+            "顯示薪資通知帳號完整顯示"
+          ],
+          "key_points": {
+            "顯示完整帳號": true
+          },
+          "prd_requirements": 0,
+          "criteria_coverage": 0.0,
+          "quality_score": null,
+          "quality_counts": null,
+          "uncovered": [],
+          "evidence_gaps": [],
+          "review_rejected": "{\"detail\":\"尚有 1 項關鍵問題待決策；可逐項決策或保留待確認\"}"
+        },
+        {
+          "case": "account-masking-removal",
+          "seconds": 144.7,
+          "model_status": "COMPLETE",
+          "requirements_total": 4,
+          "review_items": 2,
+          "critical_questions": 2,
+          "review_topics": [
+            "其他通知流程保持不變",
+            "顯示薪資通知帳號完整顯示"
+          ],
+          "key_points": {
+            "顯示完整帳號": true
+          },
+          "prd_requirements": 0,
+          "criteria_coverage": 0.0,
+          "quality_score": null,
+          "quality_counts": null,
+          "uncovered": [],
+          "evidence_gaps": [],
+          "review_rejected": "{\"detail\":\"尚有 2 項關鍵問題待決策；可逐項決策或保留待確認\"}"
+        }
+      ],
+      "verdicts": [
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "1/1",
+          "critical_in_range": true
+        },
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "1/1",
+          "critical_in_range": true
+        }
+      ],
+      "stability": {
+        "topic_agreement": 1.0,
+        "key_points_identical": true,
+        "review_item_counts": [
+          2,
+          2
+        ]
+      }
+    },
+    {
+      "case": "high-value-transfer",
+      "runs": [
+        {
+          "case": "high-value-transfer",
+          "seconds": 215.5,
+          "model_status": "COMPLETE",
+          "requirements_total": 6,
+          "review_items": 5,
+          "critical_questions": 0,
+          "review_topics": [
+            "替代驗證方式",
+            "登入與轉帳畫面無障礙支援",
+            "行銷推播",
+            "非約定轉帳OTP驗證規則",
+            "非約定轉帳排除事項"
+          ],
+          "key_points": {
+            "門檻 50,000 元": true,
+            "OTP 有效 120 秒": true,
+            "錯誤 3 次取消": true,
+            "螢幕閱讀器": true
+          },
+          "prd_requirements": 5,
+          "criteria_coverage": 1.0,
+          "quality_score": 82,
+          "quality_counts": {
+            "提醒": 1,
+            "建議": 6,
+            "資訊": 6
+          },
+          "uncovered": [
+            "連續輸入錯誤 3 次即取消交易"
+          ],
+          "evidence_gaps": [],
+          "review_rejected": false
+        },
+        {
+          "case": "high-value-transfer",
+          "seconds": 116.6,
+          "model_status": "COMPLETE",
+          "requirements_total": 8,
+          "review_items": 8,
+          "critical_questions": 0,
+          "review_topics": [
+            "替代驗證方式",
+            "登入與轉帳畫面無障礙支援",
+            "行銷推播",
+            "非約定轉帳OTP有效期",
+            "非約定轉帳OTP驗證規則",
+            "非約定轉帳排除範圍",
+            "非約定轉帳稽核紀錄保存期限",
+            "非約定轉帳錯誤次數限制"
+          ],
+          "key_points": {
+            "門檻 50,000 元": true,
+            "OTP 有效 120 秒": true,
+            "錯誤 3 次取消": true,
+            "螢幕閱讀器": true
+          },
+          "prd_requirements": 7,
+          "criteria_coverage": 1.0,
+          "quality_score": 76,
+          "quality_counts": {
+            "提醒": 1,
+            "建議": 9,
+            "資訊": 8
+          },
+          "uncovered": [
+            "連續輸入錯誤 3 次即取消交易"
+          ],
+          "evidence_gaps": [],
+          "review_rejected": false
+        }
+      ],
+      "verdicts": [
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "4/4",
+          "critical_in_range": true
+        },
+        {
+          "review_items_in_range": false,
+          "fragmented": true,
+          "key_point_coverage": "4/4",
+          "critical_in_range": true
+        }
+      ],
+      "stability": {
+        "topic_agreement": 0.62,
+        "key_points_identical": true,
+        "review_item_counts": [
+          5,
+          8
+        ]
+      }
+    },
+    {
+      "case": "payroll-notification",
+      "runs": [
+        {
+          "case": "payroll-notification",
+          "seconds": 87.3,
+          "model_status": "COMPLETE",
+          "requirements_total": 7,
+          "review_items": 3,
+          "critical_questions": 0,
+          "review_topics": [
+            "密碼傳遞方式",
+            "通知加密方式",
+            "通知重送機制"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": false,
+            "保留寄送與重送紀錄": true
+          },
+          "prd_requirements": 3,
+          "criteria_coverage": 1.0,
+          "quality_score": 84,
+          "quality_counts": {
+            "提醒": 2,
+            "建議": 2,
+            "資訊": 6
+          },
+          "uncovered": [
+            "附件密碼不可與通知同封寄送",
+            "上線日 2027-03-01"
+          ],
+          "evidence_gaps": [],
+          "review_rejected": false
+        },
+        {
+          "case": "payroll-notification",
+          "seconds": 89.2,
+          "model_status": "COMPLETE",
+          "requirements_total": 7,
+          "review_items": 4,
+          "critical_questions": 0,
+          "review_topics": [
+            "員工自行設定密碼規則",
+            "員工薪資入帳通知加密方式",
+            "員工通知密碼傳遞方式",
+            "通知與重送紀錄保留"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": true,
+            "保留寄送與重送紀錄": true
+          },
+          "prd_requirements": 4,
+          "criteria_coverage": 1.0,
+          "quality_score": 76,
+          "quality_counts": {
+            "提醒": 3,
+            "建議": 3,
+            "資訊": 8
+          },
+          "uncovered": [
+            "上線日 2027-03-01"
+          ],
+          "evidence_gaps": [],
+          "review_rejected": false
+        }
+      ],
+      "verdicts": [
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "3/4"
+        },
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "4/4"
+        }
+      ],
+      "stability": {
+        "topic_agreement": 0.5,
+        "key_points_identical": false,
+        "review_item_counts": [
+          3,
+          4
+        ]
+      }
+    }
+  ]
+}

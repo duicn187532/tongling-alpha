@@ -12,7 +12,8 @@ from rank_bm25 import BM25Okapi
 from sqlalchemy import select
 from .db import Source, Chunk, Link, Project, Change, DATA, uid, log
 
-EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md", ".vtt"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md", ".vtt"} | IMAGE_EXTENSIONS
 
 
 class SourceProvider(Protocol):
@@ -69,7 +70,7 @@ class LocalFolderProvider:
             for p in self.root.rglob("*")
             if p.is_file()
             and not p.is_symlink()
-            and p.suffix.lower() in EXTENSIONS
+            and p.suffix.lower() in EXTENSIONS - IMAGE_EXTENSIONS  # images need a vision read on upload
             and p.resolve().is_relative_to(self.root)
         ]
 
@@ -109,6 +110,11 @@ def parse_file(name: str, data: bytes) -> list[dict]:
             if sum(x.file_size for x in archive.infolist()) > 150 * 1024 * 1024:
                 raise ValueError("Office 解壓後大小超過上限")
     blocks = []
+    if ext in IMAGE_EXTENSIONS:
+        from .vision import is_image
+        if not is_image(data):
+            raise ValueError("圖片內容與副檔名不符")
+        return []  # text comes from the vision reading (vision.image_blocks)
     if ext == ".pdf":
         import fitz
 
@@ -128,11 +134,18 @@ def parse_file(name: str, data: bytes) -> list[dict]:
     elif ext == ".pptx":
         from pptx import Presentation
 
+        def slide_text(slide):
+            # Proposal decks keep figures in tables and context in speaker notes.
+            parts = [s.text for s in slide.shapes if s.has_text_frame and s.text.strip()]
+            for shape in slide.shapes:
+                if shape.has_table:
+                    parts.append("\n".join(" | ".join(c.text for c in row.cells) for row in shape.table.rows))
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
+                parts.append("備註：" + slide.notes_slide.notes_text_frame.text)
+            return "\n".join(parts)
+
         blocks = [
-            {
-                "text": "\n".join(s.text for s in slide.shapes if s.has_text_frame),
-                "page": i + 1,
-            }
+            {"text": slide_text(slide), "page": i + 1}
             for i, slide in enumerate(Presentation(io.BytesIO(data)).slides)
         ]
     elif ext == ".xlsx":

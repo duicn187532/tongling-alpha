@@ -31,7 +31,7 @@ ROUTER_DEFAULTS = {
     "agent_split": {"enabled": False}, "graph_reasoning": {"enabled": False},
     "architecture_routing": {"enabled": False}, "prd_assist": {"enabled": False},
     "escalation": {"enabled": False}, "resource_manager": {"enabled": False},
-    "decision": {"mode": "off", "model": "d1:latest"},
+    "decision": {"mode": "off", "model": "nimble-v3:latest"},
     "evaluation": {"enabled": False}, "trace": {"enabled": False},
     "role_to_model": {}, "task_to_role": {}, "policy_by_task": {},
 }

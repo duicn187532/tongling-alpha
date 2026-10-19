@@ -156,7 +156,7 @@ export function TechnicalDeliveryPanel({ revision, sources, requirements, isClie
           : <small>遠端摘要不能直接作為技術設計依據；請提供可核對的原始文件。</small>}
       </div>)}
       {!searching && searchResults.length === 0 && <p>若檢索不到適合的 SA 來源，請直接補充：</p>}
-      <label>上傳 SA 技術文件<input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md" onChange={(e) => {
+      <label>上傳 SA 技術文件<input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" onChange={(e) => {
         const file = e.target.files?.[0]; if (file) void uploadTechnical(file); e.target.value = "";
       }} /></label>
       <label>技術說明標題<input value={sourceTitle} onChange={(e) => setSourceTitle(e.target.value)} /></label>

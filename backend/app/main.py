@@ -867,6 +867,15 @@ def create_project(body: ProjectInput, db=Depends(get_db)):
     return public_project(p)
 
 
+@app.post("/api/demo/sample-requirement")
+def sample_requirement(db=Depends(get_db)):
+    """A fictional requirement to try the flow with; nothing is saved."""
+    from .sample_requirements import generate
+    config = settings(db)
+    db.rollback()  # the model call must not hold a transaction open
+    return generate(config)
+
+
 @app.post("/api/agent/guidance")
 def agent_guidance(body: GuidanceInput, db=Depends(get_db)):
     from .agent_guidance import suggest
@@ -1125,6 +1134,9 @@ def upload_common(file, kind, db, project=None):
     data = file.file.read(30 * 1024 * 1024 + 1)
     name = Path(file.filename or "upload.txt").name
     blocks = parse_file(name, data)
+    # Wireframes and slide pictures are read by a vision model (AI-11).
+    from .vision import image_blocks
+    blocks += image_blocks(name, data, settings(db))
     stored = FileUploadProvider().store(name, data)
     return serialize(
         ingest(db, name, blocks, "FILE_UPLOAD", kind, project, {"object_id": stored})
