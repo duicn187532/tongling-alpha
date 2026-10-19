@@ -270,7 +270,7 @@ def _extract(
                         "stream": False,
                         "think": False,
                         "format": FactResult.model_json_schema(),
-                        "options": {"temperature": 0, "num_predict": max_tokens},
+                        "options": {"temperature": 0, "seed": 42, "num_predict": max_tokens},
                     },
                 )
                 response.raise_for_status()
@@ -285,6 +285,7 @@ def _extract(
                         "model": config["model"],
                         "messages": messages,
                         "temperature": 0,
+                        "seed": 42,
                         "max_tokens": max_tokens,
                         "response_format": {"type": "json_object"},
                     },

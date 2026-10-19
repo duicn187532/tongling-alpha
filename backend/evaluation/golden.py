@@ -51,7 +51,10 @@ def run_case(client, case, timeout=900):
     criteria = draft["content"].get("acceptance_criteria", []) if draft else []
     with_criteria = {c.get("requirement_id") for c in criteria
                      if isinstance(c, dict) and PLACEHOLDER not in c.get("description", "")}
-    text = "\n".join([p["target_state"] for p in review] + [r["statement"] for r in requirements])
+    # Key points may be met as a new requirement or as a retained current rule.
+    content = draft["content"] if draft else {}
+    retained = [x.get("description", "") for x in content.get("current_state", []) if isinstance(x, dict)]
+    text = "\n".join([p["target_state"] for p in review] + [r["statement"] for r in requirements] + retained)
     return {
         "case": case["id"],
         "seconds": round(time.monotonic() - started, 1),
@@ -84,10 +87,11 @@ def stability(runs):
     """Topic and key-point agreement across repeated runs of one case."""
     if len(runs) < 2:
         return None
-    topics = [set(r["review_topics"]) for r in runs]
-    union = set().union(*topics)
-    shared = set.intersection(*topics)
+    from app.change_analysis import _overlap
+    first, second = runs[0]["review_topics"], runs[1]["review_topics"]
+    # Names vary ("通知加密方式" vs "薪資通知加密方式"); count similar names as the same topic.
+    matched = sum(any(_overlap(a, b) >= 0.5 for b in second) for a in first)
     points = [tuple(sorted(r["key_points"].items())) for r in runs]
-    return {"topic_agreement": round(len(shared) / max(1, len(union)), 2),
+    return {"topic_agreement": round(matched / max(1, len(first), len(second)), 2),
             "key_points_identical": len(set(points)) == 1,
             "review_item_counts": [r["review_items"] for r in runs]}
