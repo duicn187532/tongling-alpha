@@ -227,7 +227,7 @@ def _structured_once(config, task, instruction, payload, schema, fallback, *, va
                     response = client.post(selected["endpoint"].rstrip("/") + "/api/chat", json={
                         "model": selected["model"], "messages": messages, "stream": False,
                         "think": policy["think"], "format": schema.model_json_schema(),
-                        "options": {"temperature": 0, "num_predict": policy["num_predict"]}})
+                        "options": {"temperature": 0, "seed": 42, "num_predict": policy["num_predict"]}})
                     if response.is_error and any(w in response.text.lower() for w in ("out of memory", "oom", "memory allocation")):
                         raise RuntimeError("模型記憶體不足 (OOM)，並行量已降為 1，稍後重試")
                     response.raise_for_status()
@@ -241,7 +241,7 @@ def _structured_once(config, task, instruction, payload, schema, fallback, *, va
                     key = os.getenv("OPENAI_API_KEY", "")
                     response = client.post(selected["endpoint"].rstrip("/") + "/chat/completions",
                                            headers={"Authorization": f"Bearer {key}"} if key else {},
-                                           json={"model": selected["model"], "messages": messages, "temperature": 0,
+                                           json={"model": selected["model"], "messages": messages, "temperature": 0, "seed": 42,
                                                  "max_tokens": policy["num_predict"], "response_format": {"type": "json_object"}})
                     response.raise_for_status()
                     body = response.json()

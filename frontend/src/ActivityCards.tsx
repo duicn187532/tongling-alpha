@@ -52,10 +52,8 @@ export function ActivityCards({ tasks, onDismiss }: { tasks: any[]; onDismiss?: 
       <p className="execution-phase" aria-live="polite">{running && <span className="spinner" />}{running || primary.status === "QUEUED" ? primary.phase : names[primary.status]}</p>
       <p>{primary.detail}</p>
       <small>{primary.model || "本機處理"} · {primary.finished_at ? "耗時" : "已等待"} {seconds} 秒{finished && !ACTIONABLE.has(primary.status) ? " · 稍後自動收起" : ""}</small>
-      {running && <p className={heartbeatAge > 15 ? "execution-warning" : "muted"}>
-        {heartbeatAge > 15 ? `已 ${heartbeatAge} 秒未收到工作心跳，無法確認仍在執行。` : `工作心跳：${heartbeatAge} 秒前；本階段 ${phaseAge} 秒。`}
-      </p>}
-      {running && phaseAge >= 60 && <p className="execution-warning">此階段耗時較久，請耐心等候；若心跳中斷可刷新狀態後重試。</p>}
+      {running && heartbeatAge > 30 && <p className="execution-warning">已 {heartbeatAge} 秒沒有收到進度，可能已中斷；可按「更新狀態」確認，必要時重試。</p>}
+      {running && heartbeatAge <= 30 && phaseAge >= 90 && <p className="muted">本地模型處理較久（此階段 {Math.floor(phaseAge / 60)} 分鐘），仍在進行中。</p>}
       {history.length > 0 && <details className="activity-history">
         <summary>{active.length > 1 ? `另有 ${active.length - 1} 項執行中 · ` : ""}查看最近工作紀錄</summary>
         {history.map((task) =>

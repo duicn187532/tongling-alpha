@@ -1261,3 +1261,30 @@ summary {
 .next-step-bar button { margin-left: auto; }
 .task-chips .task-chip { font: inherit; cursor: pointer; }
 .subtle-mode { opacity: 0.8; }
+
+.retrieval-suggestions .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 12px; }
+.retrieval-suggestions button { min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+@media (max-width: 480px) { .retrieval-suggestions .actions { grid-template-columns: 1fr; } }
+
+.gap-panel .row { justify-content: space-between; align-items: center; }
+.gap-item { display: grid; gap: 6px; margin: 10px 0; }
+.gap-item textarea { width: 100%; }
+.gap-item ul { margin: 4px 0 0 18px; }
+
+.steps .steps-divider { width: 1px; align-self: stretch; margin: 4px 6px; background: var(--line, #ddd); }
+.steps .step-extra { opacity: 0.85; font-size: 0.92em; }
+.create-advanced { margin-top: 8px; }
+.create-advanced[open] { display: grid; gap: 8px; }
+
+.settings-group { display: block; width: 100%; margin: 8px 0 2px; opacity: 0.7; font-size: 12px; }
+
+.quality-panel summary { cursor: pointer; }
+.quality-general { margin: 8px 0; }
+.quality-item { border-top: 1px solid var(--line, #ddd); padding-top: 10px; margin-top: 10px; }
+.quality-item h4 { margin: 0 0 4px; }
+.quality-item ul { margin: 4px 0; padding-left: 18px; }
+.quality-item .severity { font-size: 12px; font-weight: 700; margin-right: 4px; }
+.quality-item .severity-資訊 { opacity: 0.75; }
+.quality-proposal { display: grid; gap: 6px; margin: 8px 0; padding: 10px; border: 1px dashed var(--line, #ddd); border-radius: 8px; }
+.split-part { display: grid; gap: 4px; }
+.row-actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }

@@ -161,6 +161,10 @@ ACTION_ITEM, QUESTION, EXCLUDED, SYSTEM_CAPABILITY. Do not infer agreements or o
 No invented facts, approvals, system names or emails. Preserve uncertainty. For each assertion identify
 the exact subject, applicable condition and effective date only when explicit. Use supersedes only for
 explicitly replaced assertion identifiers; do not treat a later meeting as replacing every older source.
+Topic granularity: one topic per business capability or rule that can be accepted on its own (for example
+通知加密方式, 密碼傳遞方式). Keep fields, conditions, examples and minor details inside that topic's statement;
+never create a topic per sentence, field or detail. Background, motivation and schedule are not REQUIREMENT
+unless they constrain the solution. Prefer fewer, specific, decisive assertions over many fragments.
 Output language: Traditional Chinese."""
 
 
@@ -266,7 +270,7 @@ def _extract(
                         "stream": False,
                         "think": False,
                         "format": FactResult.model_json_schema(),
-                        "options": {"temperature": 0, "num_predict": max_tokens},
+                        "options": {"temperature": 0, "seed": 42, "num_predict": max_tokens},
                     },
                 )
                 response.raise_for_status()
@@ -281,6 +285,7 @@ def _extract(
                         "model": config["model"],
                         "messages": messages,
                         "temperature": 0,
+                        "seed": 42,
                         "max_tokens": max_tokens,
                         "response_format": {"type": "json_object"},
                     },
@@ -567,7 +572,9 @@ def apply_analysis(db, project, extracted):
         db,
         project.id,
         "ANALYSIS",
-        f"完成 {len(affected)} 個主題比對；保留衝突供人工決策",
+        f"完成 {len(affected)} 個主題比對" + (
+            "；有來源衝突待你決策" if any(
+                r.status == "CONFLICT" for r in db.scalars(select(Requirement).where(Requirement.id.in_(changed_ids)))) else ""),
         {"affected_requirements": changed_ids},
     )
     return changed_ids

@@ -1,0 +1,85 @@
+{
+  "provider": "ollama",
+  "at": "2026-10-19 21:35",
+  "cases": [
+    {
+      "case": "payroll-notification",
+      "runs": [
+        {
+          "case": "payroll-notification",
+          "seconds": 58.0,
+          "model_status": "COMPLETE",
+          "requirements_total": 6,
+          "review_items": 2,
+          "critical_questions": 0,
+          "review_topics": [
+            "通知內容",
+            "通知加密方式"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": true,
+            "保留寄送與重送紀錄": true
+          },
+          "prd_requirements": 2,
+          "criteria_coverage": 1.0,
+          "quality_score": 98,
+          "quality_counts": {
+            "提醒": 0,
+            "建議": 1,
+            "資訊": 4
+          },
+          "review_rejected": false
+        },
+        {
+          "case": "payroll-notification",
+          "seconds": 81.3,
+          "model_status": "COMPLETE",
+          "requirements_total": 9,
+          "review_items": 2,
+          "critical_questions": 0,
+          "review_topics": [
+            "薪資通知加密方式",
+            "資訊安全要求"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": true,
+            "保留寄送與重送紀錄": true
+          },
+          "prd_requirements": 2,
+          "criteria_coverage": 1.0,
+          "quality_score": 94,
+          "quality_counts": {
+            "提醒": 0,
+            "建議": 3,
+            "資訊": 4
+          },
+          "review_rejected": false
+        }
+      ],
+      "verdicts": [
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "4/4"
+        },
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "4/4"
+        }
+      ],
+      "stability": {
+        "topic_agreement": 0.0,
+        "key_points_identical": true,
+        "review_item_counts": [
+          2,
+          2
+        ]
+      }
+    }
+  ]
+}

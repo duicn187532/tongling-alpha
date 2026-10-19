@@ -330,6 +330,7 @@ class BackgroundJobInput(BaseModel):
     project_id: str | None = None
     brief: str = Field(default="", max_length=4000)
     query: str = Field(default="", max_length=1000)
+    automatic: bool = False
 
 
 class QueueSettingsInput(BaseModel):
@@ -822,6 +823,9 @@ v7_api.register(app, get_db, get)
 knowledge_api.register(app, get_db, get)
 knowledge_management.register(app, get_db)
 project_hub.register(app, get_db, get)
+from . import prd_editor, prd_quality  # noqa: E402
+prd_editor.register(app, get_db, get)
+prd_quality.register(app, get_db, get)
 
 
 @app.get("/api/projects")
@@ -877,10 +881,10 @@ def submit_job(body: BackgroundJobInput, request: Request, db=Depends(get_db)):
         raise ValueError("此工作需要專案")
     if body.kind == "GUIDANCE" and not body.brief.strip():
         raise ValueError("請輸入需求起點")
-    if body.kind == "RAG" and not body.query.strip():
+    if body.kind == "RAG" and not body.automatic and not body.query.strip():
         raise ValueError("請輸入檢索關鍵字")
     payload = {"brief": body.brief.strip()} if body.kind == "GUIDANCE" else (
-        {"query": body.query.strip()} if body.kind == "RAG" else {})
+        {"query": body.query.strip(), "automatic": body.automatic} if body.kind == "RAG" else {})
     key = request.headers.get("Idempotency-Key")
     if key and (len(key) > 160 or len(key) < 8):
         raise ValueError("Idempotency-Key 長度必須介於 8–160")
@@ -1391,8 +1395,55 @@ def dismiss(iid: str, db=Depends(get_db)):
     return serialize(row)
 
 
+class ModifiedCriteria(BaseModel):
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=8)
+
+
+def criteria_placeholder(statement):
+    return [f"待 PM 依修改後需求確認可驗證條件：{statement.strip().rstrip('。')}"]
+
+
+def modified_criteria(rid, statement):
+    """Acceptance criteria for the PM's modified wording, generated in a
+    read-only session so the model call never runs under the write lock.
+    Returns (change_analysis fingerprint, criteria), or None when there is no
+    proposal to update."""
+    from .model_runtime import structured
+    with Session() as read_db:
+        r = get(read_db, Requirement, rid)
+        p = get(read_db, Project, r.project_id)
+        report = (p.state or {}).get("change_analysis") or {}
+        proposal = next((item for item in report.get("proposals", []) if item["requirement_id"] == rid), None)
+        # Skip the model when the save will be refused or the wording is the
+        # AI's own suggestion (its criteria already fit).
+        if (not proposal or p.runtime == "RUNNING" or p.state.get("analysis_stale")
+                or report.get("model_status") == "PENDING"
+                or statement.strip() == (proposal.get("proposed_requirement") or {}).get("statement")):
+            return None
+        config = {**settings(read_db), "_project_id": p.id}
+        payload = {"topic": r.topic, "modified_requirement": statement,
+                   "current_state": proposal.get("current_state", ""),
+                   "evidence": [f.get("statement", "")[:400] for f in r.evidence[:6]]}
+    fallback = {"acceptance_criteria": criteria_placeholder(statement)}
+    try:
+        result = structured(
+            config, "CHANGE_PROPOSAL",
+            "你是金融業資深 PM。依 PM 修改後的需求，寫出 1–3 條可驗證的繁體中文驗收條件，"
+            "每條一行，格式為「前提：…；操作：…；結果：…」，涵蓋主要成功情境與最重要的例外，不寫空泛條件。"
+            "只能依修改後需求的內容撰寫：修改後需求未提及或已排除的行為不得出現；"
+            "不得新增需求以外的系統、欄位、核准或數值。只回傳 acceptance_criteria。",
+            payload, ModifiedCriteria, lambda: fallback, timeout_seconds=90, max_tokens=800)
+        criteria = [c.strip() for c in result.acceptance_criteria if c.strip()] or fallback["acceptance_criteria"]
+    except Exception:
+        criteria = fallback["acceptance_criteria"]
+    return report.get("fingerprint"), criteria
+
+
 @app.put("/api/requirements/{rid}/decision")
 def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
+    # A modified requirement needs criteria that match its new wording; the
+    # model call happens before BEGIN IMMEDIATE so it never holds the lock.
+    generated = modified_criteria(rid, body.statement) if body.action == "MODIFY" and body.statement.strip() else None
     db.execute(text("BEGIN IMMEDIATE"))
     r = get(db, Requirement, rid)
     p = get(db, Project, r.project_id)
@@ -1408,19 +1459,37 @@ def decision(rid: str, body: DecisionInput, db=Depends(get_db)):
         body.rationale = "PM 保留待確認，列為待決事項"
     if p.state.get("analysis_stale"):
         raise ValueError("請先更新分析，再進行決策")
-    proposal = next((item for item in (p.state.get("change_analysis") or {}).get("proposals", [])
-                      if item["requirement_id"] == rid), {})
+    report = dict(p.state.get("change_analysis") or {})
+    proposals = [dict(item) for item in report.get("proposals", [])]
+    proposal = next((item for item in proposals if item["requirement_id"] == rid), {})
     suggested = (proposal.get("proposed_requirement") or {}).get("statement") or r.statement
+    criteria = None
+    if proposal:
+        offered = dict(proposal.get("proposed_requirement") or {})
+        if body.action == "MODIFY" and generated:
+            fingerprint, criteria = generated
+            if fingerprint != report.get("fingerprint"):
+                criteria = criteria_placeholder(body.statement)
+            # Keep the AI's own criteria so adopting its wording later restores them.
+            offered.setdefault("suggested_acceptance_criteria", offered.get("acceptance_criteria", []))
+            offered["acceptance_criteria"] = criteria
+        elif "suggested_acceptance_criteria" in offered:
+            offered["acceptance_criteria"] = offered.pop("suggested_acceptance_criteria")
+        proposal["proposed_requirement"] = offered
+        # The fingerprint stays as is: criteria are not part of it, so the
+        # approved review still holds.
+        report["proposals"] = proposals
     r.decision = {
         **body.model_dump(),
         "category": "SCOPE_EXCLUSION" if r.status == "EXCLUDED" else body.category,
         # Adopting means adopting the AI's formal wording shown on the card.
         "statement": body.statement if body.action == "MODIFY" else suggested if body.action == "ACCEPT" else r.statement,
+        **({"acceptance_criteria": criteria} if criteria else {}),
         "decided_at": now(),
     }
     project_lifecycle.memory_for_decision(db, r)
     p.epoch += 1
-    p.state = {**p.state, "draft_id": None, "step": 6}
+    p.state = {**p.state, **({"change_analysis": report} if report else {}), "draft_id": None, "step": 6}
     p.runtime = "WAITING_HUMAN"
     if p.current_revision_id and not db.scalar(
         select(Change).where(
@@ -1517,12 +1586,12 @@ def review_change_analysis(pid: str, body: ProposalReviewInput, db=Depends(get_d
             if status in {"TRUE_CONFLICT", "UNSUPPORTED"}:
                 continue
             decided = {"decided_at": now(), "decided_by": "PM_PROPOSAL_REVIEW"}
-            if proposal.get("duplicate_of"):
-                row.decision = {"action": "REJECT", "category": "FUNCTIONAL", "statement": row.statement,
-                                "rationale": f"與「{names.get(proposal['duplicate_of'], '其他提案')}」重複，已合併", **decided}
-            elif status == "CONTEXT":
+            if status == "CONTEXT":
                 row.decision = {"action": "ACCEPT", "category": "DECISION_CONTEXT", "statement": row.statement,
                                 "rationale": "現行規範，作為本次需求的背景依據", **decided}
+            elif proposal.get("duplicate_of"):
+                row.decision = {"action": "REJECT", "category": "FUNCTIONAL", "statement": row.statement,
+                                "rationale": f"與「{names.get(proposal['duplicate_of'], '其他提案')}」重複，已合併", **decided}
             elif status == "UNKNOWN":
                 row.decision = {"action": "PENDING", "category": "OPEN_ISSUE", "statement": row.statement,
                                 "rationale": "資訊不足，列為待決事項", **decided}

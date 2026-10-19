@@ -198,8 +198,10 @@ def _execute(job_id):
                 result = suggest(payload["brief"], settings(db))
         elif kind == "RAG":
             from .knowledge_api import search_project
-            with Session.begin() as db:
-                result = search_project(db, payload["query"], pid)
+            with Session() as db:
+                result = search_project(db, payload["query"], pid,
+                                        automatic=payload.get("automatic", False))
+                db.commit()
         elif kind == "PRD":
             from .lifecycle import create_draft
             with Session.begin() as db:

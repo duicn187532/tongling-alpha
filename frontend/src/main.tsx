@@ -10,6 +10,8 @@ import { ClientApp } from "./ClientApp";
 import { KnowledgePanel, jobLabel } from "./KnowledgePanel";
 import { ProjectManager } from "./ProjectManager";
 import { TechnicalDeliveryPanel } from "./TechnicalDeliveryPanel";
+import { GapPanel, RequirementRowEditor } from "./PrdEditor";
+import { QualityPanel } from "./PrdQuality";
 import { ProjectHub } from "./ProjectHub";
 import { AppearanceSettings, initAppearanceRuntime } from "./AppearanceSettings";
 import { QueueSettings } from "./QueueSettings";
@@ -34,17 +36,21 @@ function loadMermaid() {
   });
   return mermaidModule;
 }
-const steps = [
-  "需求說明",
-  "知識檢索",
-  "補充資料",
-  "會議助理",
-  "變更分析",
-  "提案審閱",
-  "流程／架構",
-  "預覽 PRD",
-  "版本與下載",
+// Four stages a PM moves through; meetings and IT delivery are side tabs.
+const STAGES = [
+  { label: "需求與依據", pages: [1, 2, 3] },
+  { label: "審閱提案", pages: [5, 6] },
+  { label: "PRD", pages: [8] },
+  { label: "版本", pages: [9] },
 ];
+const EXTRAS = [
+  { label: "會議", page: 4 },
+  { label: "IT 交付", page: 7 },
+];
+function placeName(page: number) {
+  return STAGES.find((stage) => stage.pages.includes(page))?.label ||
+    EXTRAS.find((extra) => extra.page === page)?.label || "";
+}
 const statusLabels: Record<string, string> = {
   READY: "準備就緒",
   RUNNING: "彤靈處理中",
@@ -69,6 +75,19 @@ const statusLabels: Record<string, string> = {
   UNKNOWN: "待確認",
   TRUE_CONFLICT: "有效規範衝突",
   CONTEXT: "現行規範（背景）",
+  KEY: "關鍵依據",
+  SUPPORTING: "支持依據",
+  REJECTED: "不相關",
+  EXTERNAL_BENCHMARK: "外部參考",
+  INTERNAL_AUTHORITY: "內部正式規範",
+  UNVERIFIED_INTERNAL: "內部資料（未驗證）",
+  CURRENT: "現行有效",
+  FUTURE: "尚未生效",
+  LEXICAL: "關鍵字",
+  SEMANTIC: "語意",
+  GRAPH: "圖譜",
+  SERVER_SEARCH: "公司伺服器",
+  SERVER_GRAPH: "公司伺服器圖譜",
   HIGH_RISK_CHANGE: "放寬控制",
   TECHNICAL_UNSUPPORTED: "技術不支援",
   KEY_INFORMATION_MISSING: "缺關鍵資訊",
@@ -705,7 +724,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     return () => window.clearInterval(timer);
   }, [guidanceBusy]);
   const [delegated, setDelegated] = useState(false);
-  const [startOnCreate, setStartOnCreate] = useState(false);
+  const [startOnCreate, setStartOnCreate] = useState(true);
   const [initialMode, setInitialMode] = useState<"AGENT" | "MANUAL">("AGENT");
   const [composer, setComposer] = useState(""),
     [showActivity, setShowActivity] = useState(false),
@@ -717,6 +736,22 @@ function App({ isClient = false }: { isClient?: boolean }) {
   const [searchSummary, setSearchSummary] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchSeconds, setSearchSeconds] = useState(0);
+  const [searchProjectId, setSearchProjectId] = useState("");
+  const [suggestedQueries, setSuggestedQueries] = useState<string[]>([]);
+  const [suggestionError, setSuggestionError] = useState("");
+  useEffect(() => {
+    setQuery("");
+    setSuggestedQueries([]);
+    setSuggestionError("");
+  }, [pid]);
+  useEffect(() => {
+    if (!pid || page !== 2) return;
+    let active = true;
+    api<{ queries: string[] }>(`/projects/${pid}/retrieval-suggestions`)
+      .then((data) => { if (active) { setSuggestedQueries(data.queries); setSuggestionError(""); } })
+      .catch((e) => { if (active) setSuggestionError(`建議詞暫時無法讀取：${e.message}`); });
+    return () => { active = false; };
+  }, [pid, page, project?.description, project?.sources?.length]);
   useEffect(() => {
     if (!searching) return;
     const timer = window.setInterval(() => setSearchSeconds((seconds) => seconds + 1), 1000);
@@ -977,11 +1012,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
       document.removeEventListener("visibilitychange", visibleAgain);
     };
   }, [pid]);
-  useEffect(() => {
-    // Do not cover settings or the overview; the project shows the same item inline.
-    const next = project?.interruptions?.find((i: any) => i.status === "OPEN");
-    setInterrupt(next && !settingsOpen && !homeOpen ? next : null);
-  }, [project?.interruptions?.map((i: any) => i.id + i.status).join(","), settingsOpen, homeOpen]);
+  // Pending items show inline (next-step bar, Agent card); the dialog opens only on request.
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(""), 5000);
@@ -994,6 +1025,34 @@ function App({ isClient = false }: { isClient?: boolean }) {
     setDetailView(true);
     setPage(step);
   }
+  function showSearchResult(response: any, projectId: string) {
+    setSearchProjectId(projectId);
+    setResults(response.results || []);
+    setSearchWarnings(response.warnings || []);
+    const count = response.results?.length || 0;
+    setSearchSummary(`檢索完成：本機 ${response.local_count || 0} 筆、共用知識伺服器 ${response.remote_count || 0} 筆。${count ? "請檢查相關性，再加入專案依據。" : "沒有符合的來源，可調整檢索詞或確認知識庫範圍。"}${response.queries?.length ? ` 本次檢索詞：${response.queries.join("、")}` : ""}`);
+  }
+  async function searchKnowledge(automatic = false, term = query) {
+    const projectId = pid;
+    setSearching(true);
+    setSearchSeconds(0);
+    setSearchProjectId(projectId);
+    setResults([]);
+    setSearchWarnings([]);
+    setSearchSummary("");
+    try {
+      const response = await queueAndWait("RAG", { query: term, project_id: projectId, automatic });
+      if (selectedProject.current === projectId) showSearchResult(response, projectId);
+    } finally {
+      setSearching(false);
+    }
+  }
+  const attachedIds = new Set((project?.sources || []).map((src: any) => src.id));
+  const attachedRemote = new Set((project?.sources || []).map((src: any) => src.meta?.remote_key).filter(Boolean));
+  const excludedHits = (project?.state?.retrieval_results || []).filter((hit: any) =>
+    !["KEY", "SUPPORTING"].includes(hit.evidence_role) && !attachedIds.has(hit.source_id) &&
+    !attachedRemote.has(`${hit.provider_id}:${hit.remote_evidence_id}`) && hit.title !== "需求起點");
+  const pmEvents = (project?.events || []).filter((e: any) => !HIDDEN_EVENTS.has(e.kind));
   const nextStep = (() => {
     if (!project) return null;
     const report = project.state.change_analysis;
@@ -1022,13 +1081,15 @@ function App({ isClient = false }: { isClient?: boolean }) {
   useEffect(() => {
     if (!revision?.id) { setPrdAdvice(null); return; }
     let live = true;
-    api<any>(`/prd-revisions/${revision.id}/assist/prd`)
-      .then((result) => { if (live) setPrdAdvice(result); })
+    const id = revision.id;
+    api<any>(`/prd-revisions/${id}/assist/prd`)
+      .then((result) => { if (live) setPrdAdvice(result ? { ...result, revision_id: id } : null); })
       .catch(() => { if (live) setPrdAdvice(null); });
     return () => { live = false; };
-  }, [revision?.id, revision?.content_hash]);
+    // Keyed to the draft, not its hash: adopting a suggestion edits the draft.
+  }, [revision?.id]);
   useEffect(() => {
-    if (page !== 8 || !revision?.id || !showItReference) { setDeliveryCheck(null); return; }
+    if (page !== 7 || !revision?.id || !showItReference) { setDeliveryCheck(null); return; }
     let live = true;
     api(`/prd-revisions/${revision.id}/delivery-readiness`)
       .then((result) => { if (live) setDeliveryCheck(result); })
@@ -1090,8 +1151,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
     <>
       <div className="section-head">
         <div>
-          <h2>把依據放在同一個地方</h2>
-          <p>所有來源都會解析成可追溯的證據，不會直接成為已核准需求。</p>
+          <h2>本案依據</h2>
         </div>
       </div>
       <div className="card">
@@ -1213,8 +1273,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
     </>
   );
 
-  function renderPage() {
-    if (page === 1)
+  function renderSingle(which: number) {
+    if (which === 1)
       return (
         <>
           <h2>從一個清楚的需求開始</h2>
@@ -1250,21 +1310,33 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <button onClick={() => uploadRef.current?.click()}>
                 上傳需求文件
               </button>
-              <button onClick={() => setPage(2)}>下一步：知識檢索 →</button>
+
             </div>
           </div>
         </>
       );
-    if (page === 2)
+    if (which === 2)
       return (
         <>
-          <h2>尋找可採用的依據</h2>
+          <h2>搜尋共用知識</h2>
           <details className="knowledge-drawer">
             <summary>標籤、圖譜與同業研究</summary>
             <KnowledgePanel pid={pid} config={config} act={act} isClient={isClient} />
           </details>
           <p>搜尋結果只是參考，加入專案後才會參與需求分析。</p>
           <div className="card">
+            <h3>依需求自動尋找知識</h3>
+            <p>彤靈會從專案目標與已保存的需求整理檢索詞，搜尋目前允許的本機與共用知識來源，合併重複結果。</p>
+            <div className="actions">
+              <button className="primary" disabled={busy || searching} onClick={() => act(() => searchKnowledge(true))}>
+                {searching ? "檢索中…" : "依需求自動檢索"}
+              </button>
+            </div>
+            {suggestedQueries.length > 0 && <div className="retrieval-suggestions">
+              <p className="muted">建議檢索詞 · 點選可單獨搜尋，也可在下方自行調整</p>
+              <div className="actions">{suggestedQueries.map((term) => <button key={term} disabled={busy || searching} onClick={() => { setQuery(term); void act(() => searchKnowledge(false, term)); }}>{term}</button>)}</div>
+            </div>}
+            {suggestionError && <p role="status" className="feedback warning">{suggestionError}</p>}
             <div className="row">
               <input
                 aria-label="搜尋知識"
@@ -1275,23 +1347,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <button
                 className="primary"
                 disabled={busy || !query.trim()}
-                onClick={() =>
-                  act(async () => {
-                    setSearching(true);
-                    setSearchSeconds(0);
-                    setResults([]);
-                    setSearchWarnings([]);
-                    setSearchSummary("");
-                    try {
-                      const response = await queueAndWait("RAG", { query, project_id: pid });
-                      setResults(response.results);
-                      setSearchWarnings(response.warnings || []);
-                      setSearchSummary(`檢索完成：本機 ${response.local_count} 份、伺服器 ${response.remote_count} 份。${response.results.length === 0 ? "沒有符合的來源。" : "請檢查相關性與證據角色。"}`);
-                    } finally {
-                      setSearching(false);
-                    }
-                  })
-                }
+                onClick={() => act(() => searchKnowledge())}
               >
                 搜尋
               </button>
@@ -1318,22 +1374,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 }}
               />
             </label>}
-            <small>
-              預設為離線字詞特徵向量；可在設定指定本機語意嵌入模型。
-            </small>
           </div>
-          {searchWarnings.map((warning, i) => <p key={i} role="status" className="feedback warning">{warning}</p>)}
-          {searchSummary && <p role="status" className="feedback success">{searchSummary}</p>}
-          {results.map((r: any) => (
+          {searchProjectId === pid && searchWarnings.map((warning, i) => <p key={i} role="status" className="feedback warning">{warning}</p>)}
+          {searchProjectId === pid && searchSummary && <p role="status" className={`feedback ${results.length ? "success" : "warning"}`}>{searchSummary}</p>}
+          {searchProjectId === pid && results.map((r: any) => (
             <article className="card" key={r.chunk_logical_id || r.chunk_id}>
               <span className="badge">
-                {r.evidence_role} · 相關度{" "}
+                {label(r.evidence_role)} · 相關度{" "}
                 {Math.round((r.case_relevance_score || 0) * 100)}%
               </span>
               <p>
                 <small>
-                  {r.retrieval_channels?.join(" + ")} · {r.authority_class} ·{" "}
-                  {r.temporal_status}
+                  {r.retrieval_channels?.map(label).join(" + ")} · {label(r.authority_class)} ·{" "}
+                  {label(r.temporal_status)}
                 </small>
               </p>
               <p>{r.case_relevance_reason}</p>
@@ -1380,7 +1433,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       act(async () => {
                         const result = r.source_location === "REMOTE"
                           ? await api("/projects/" + pid + "/knowledge/attach-remote", "POST", {
-                            provider_id: r.provider_id, remote_evidence_id: r.remote_evidence_id, query,
+                            provider_id: r.provider_id, remote_evidence_id: r.remote_evidence_id, query: r.matched_query || query,
                           })
                           : await api("/projects/" + pid + "/knowledge/attach", "POST", { source_id: r.source_id });
                         setNotice(`${result.message}。重新分析後會納入需求比對。`);
@@ -1395,8 +1448,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 3) return sourcesView;
-    if (page === 4)
+    if (which === 3) return sourcesView;
+    if (which === 4)
       return (
         <>
           <h2>每一場會議，都保留脈絡</h2>
@@ -1500,7 +1553,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 5)
+    if (which === 5)
       return (
         <>
           <div className="section-head">
@@ -1566,7 +1619,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <div className="evidence" key={s.source_id}>
                   <strong>{s.title}</strong>
                   <p>
-                    {s.evidence_role} · 相關度{" "}
+                    {label(s.evidence_role)} · 相關度{" "}
                     {Math.round(s.case_relevance_score * 100)}%
                   </p>
                   <p>{s.case_relevance_reason}</p>
@@ -1600,7 +1653,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
           </details>
         </>
       );
-    if (page === 6 && project.state.change_analysis) {
+    if (which === 6 && project.state.change_analysis) {
       const report = project.state.change_analysis;
       const reviewed = project.state.change_review?.status === "APPROVED" && project.state.change_review?.fingerprint === report.fingerprint;
       const toReview = report.proposals.filter((item: any) => item.needs_review ?? true);
@@ -1619,15 +1672,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
           <strong>{toReview.length} 項需審閱 · 尚未處理 {open.length} 項{unresolved.length ? ` · ${unresolved.length} 項須先決策` : ""}</strong>
           <p>{reviewed ? "✓ 整體提案已審閱，可產生 PRD 草稿。" : unresolved.length
             ? "請先處理標示「須決策」的項目，其餘可一次接受。"
-            : "按「接受整體提案」：未逐項處理的提案依 AI 建議納入，現行規範列為背景，資訊不足者列為待決事項。"}</p>
+            : "按下後：未逐項處理的提案依 AI 建議納入，現行規範列為背景，資訊不足者列為待決事項，並直接產生 PRD 草稿。"}</p>
           <div className="actions">
             <button className="primary" disabled={busy || !!blockedReason || !!unresolved.length || reviewed}
-              onClick={() => act(() => api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint}), "已接受整體提案")}>
-              接受整體提案並納入草稿
+              onClick={() => act(async () => {
+                await api(`/projects/${pid}/change-analysis/review`, "POST", {action: "APPROVE", fingerprint: report.fingerprint});
+                await queueAndWait("PRD", { project_id: pid });
+                setPage(8);
+              }, "已接受提案並產生 PRD 草稿")}>
+              接受提案並產生 PRD 草稿
             </button>
-            <button className={reviewed ? "primary" : ""} disabled={busy || !reviewed || !!unresolved.length} onClick={() => act(async () => {
+            {reviewed && <button className="primary" disabled={busy || !!unresolved.length} onClick={() => act(async () => {
               await queueAndWait("PRD", { project_id: pid }); setPage(8);
-            })}>產生待審閱 PRD</button>
+            })}>{project.state.draft_id ? "開啟 PRD 草稿" : "重新產生 PRD 草稿"}</button>}
           </div>
         </div>
         {toReview.length === 0 && <p className="feedback success">沒有需要你判斷的變更；可直接接受整體提案。</p>}
@@ -1643,11 +1700,11 @@ function App({ isClient = false }: { isClient?: boolean }) {
         })}
         {others.length > 0 && <details className="card"><summary>無需處理的 {others.length} 項（現行規範、已符合或重複）</summary>
           {others.map((item: any) => <p key={item.requirement_id}><span className="badge">{label(item.status)}</span> {item.name}：
-            {item.duplicate_of ? `與「${names[item.duplicate_of] || "其他提案"}」重複，已合併` : item.target_state || item.current_state}</p>)}
+            {item.paired_current_state ? `已作為「${names[item.duplicate_of] || "相關提案"}」的現況` : item.duplicate_of ? `與「${names[item.duplicate_of] || "其他提案"}」重複，已合併` : item.target_state || item.current_state}</p>)}
         </details>}
       </>;
     }
-    if (page === 6)
+    if (which === 6)
       return (
         <>
           <h2>讓每個決策有依據</h2>
@@ -1737,32 +1794,12 @@ function App({ isClient = false }: { isClient?: boolean }) {
           ))}
         </>
       );
-    if (page === 7)
+    if (which === 7)
       return (
         <>
-          <h2>可追溯的圖表來源</h2>
-          <p>
-            先產生 PRD
-            草稿，再檢視圖表。未有技術來源時，系統架構會明確保留待確認。
-          </p>
-          {revision ? (
-            revision.content.diagrams.map((d: any, i: number) => (
-              <DiagramEditor
-                revision={revision}
-                act={act}
-                key={revision.id + i + d.mermaid}
-                diagram={d}
-                index={i}
-              />
-            ))
-          ) : (
-            <button onClick={() => setPage(6)}>前往需求審閱</button>
-          )}
-        </>
-      );
-    if (page === 8)
-      return (
-        <>
+          <h2>IT 交付</h2>
+          <p>給 SA／IT 的技術設計、交付缺項與圖表。業務 PRD 可以先定版，這裡的內容另外審閱。</p>
+          {revision ? <>
           {revision && <TechnicalDeliveryPanel revision={revision} sources={project?.sources || []} requirements={project?.requirements || []} isClient={isClient} act={act} onRevisionCreated={setRevisionId} />}
           {revision && <section className="card delivery-readiness" aria-label="PRD 缺項參考">
             <div className="row"><div><span className="eyebrow">OPTIONAL REFERENCE</span><h2>PRD 缺項參考</h2></div>
@@ -1785,6 +1822,23 @@ function App({ isClient = false }: { isClient?: boolean }) {
               })}
             </div>}</>}
           </section>}
+            {revision.content.diagrams.map((d: any, i: number) => (
+              <DiagramEditor
+                revision={revision}
+                act={act}
+                key={revision.id + i + d.mermaid}
+                diagram={d}
+                index={i}
+              />
+            ))}
+          </> : (
+            <div className="empty"><p>先產生 PRD 草稿，才會有技術設計與圖表。</p></div>
+          )}
+        </>
+      );
+    if (which === 8)
+      return (
+        <>
           <div className="section-head">
             <div>
               <h2>PRD 預覽</h2>
@@ -1792,7 +1846,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <div className="actions">
                   <button onClick={() => act(async () => {
                     setNotice("正在產生 PRD 候選建議，請稍候…");
-                    setPrdAdvice(await api(`/prd-revisions/${revision.id}/assist/prd`, "POST", undefined, 200000));
+                    setPrdAdvice({ ...(await api(`/prd-revisions/${revision.id}/assist/prd`, "POST", undefined, 200000)), revision_id: revision.id });
                     setNotice("PRD 建議已產生，請核對來源及待確認項目。");
                   })}>AI 檢查 PRD 與驗收缺漏</button>
                   <button
@@ -1815,7 +1869,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   </a>
                 </div>
               )}
-              <p>確認內容與圖表後，可建立不可覆寫的業務基準版本。上方缺項清單供補強參考，不阻擋業務定版。</p>
+              <p>{revision?.status === "IN_REVIEW"
+                ? "回答下方問題補齊空白章節，或直接編修需求；確認後建立不可覆寫的業務基準版本。"
+                : "這是已定版或歷史版本，內容不可修改；要調整請加入新資訊開始修訂。"}</p>
             </div>
             {revision?.status === "IN_REVIEW" && (
               <button
@@ -1836,10 +1892,17 @@ function App({ isClient = false }: { isClient?: boolean }) {
               </button>
             )}
           </div>
-          {prdAdvice?.result && revision && prdAdvice.revision_hash === revision.content_hash && <section className="card">
-            <h3>AI 候選建議 · 不改寫已確認 PRD</h3>
+          {revision && revision.id === project.state.draft_id && <GapPanel revision={revision} onChange={() => void refresh()} />}
+          {revision && revision.id === project.state.draft_id && <QualityPanel revision={revision} onChange={() => void refresh()} />}
+          {prdAdvice?.result && revision && prdAdvice.revision_id === revision.id && <section className="card">
+            <h3>AI 建議 · 採用後才會寫入草稿</h3>
             {prdAdvice.result.candidates?.map((item: any, i: number) => <div className="prd-row" key={i}>
               <h4>{item.title}</h4><p>{item.suggestion}</p>
+              {revision.status === "IN_REVIEW" && <button disabled={busy || item.applied} onClick={() => act(async () => {
+                await api(`/prd-revisions/${revision.id}/advice/apply`, "POST", { kind: item.kind, text: item.suggestion });
+                item.applied = true;
+                setNotice(`已採用：${item.title}`);
+              })}>{item.applied ? "✓ 已採用" : "採用到 PRD"}</button>}
               <small>來源：{item.source_refs?.length
                 ? item.source_refs.map((id: string) => <span key={id}>{sourceButton(id)} </span>)
                 : "尚缺"} · 待確認：{item.uncertainty || "無"}</small>
@@ -1887,6 +1950,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
                               <h3>{row.title}</h3>
                               <p>{row.description}</p>
                               {row.detail && <small>{row.detail}</small>}
+                              {section.key === "requirements" && revision.id === project.state.draft_id &&
+                                <RequirementRowEditor revision={revision} row={row} onChange={() => void refresh()} />}
                               {row.source_refs?.length > 0 && (
                                 <details>
                                   <summary>
@@ -2017,6 +2082,22 @@ function App({ isClient = false }: { isClient?: boolean }) {
       </>
     );
   }
+  function renderPage() {
+    if ([1, 2, 3].includes(page))
+      return <>{renderSingle(1)}{renderSingle(3)}{renderSingle(2)}</>;
+    if ([5, 6].includes(page)) {
+      if (!project.state.change_analysis) return renderSingle(5);
+      return <>
+        {renderSingle(6)}
+        <details className="card analysis-details">
+          <summary>分析細節：來源比對與證據（需要時再看）</summary>
+          {renderSingle(5)}
+        </details>
+      </>;
+    }
+    return renderSingle(page);
+  }
+
 
   return (
     <div className={`app${settingsOpen ? " settings-active" : ""}${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}${mobileLeftOpen ? " mobile-left-open" : ""}${mobileRightOpen ? " mobile-right-open" : ""}`} onClickCapture={clickFeedback}>
@@ -2148,17 +2229,27 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <span className="eyebrow">下一步</span><span>{nextStep.text}</span>
               {nextStep.action === "analyze" && project.runtime !== "RUNNING"
                 ? <button className="primary" disabled={busy} onClick={() => act(() => api(`/projects/${pid}/analysis/run`, "POST"), "已開始分析")}>執行分析</button>
-                : nextStep.step > 0 && page !== nextStep.step && <button className="primary" onClick={() => setPage(nextStep.step)}>前往「{steps[nextStep.step - 1]}」</button>}
+                : nextStep.step > 0 && placeName(page) !== placeName(nextStep.step) && <button className="primary" onClick={() => setPage(nextStep.step)}>前往「{placeName(nextStep.step)}」</button>}
             </div>}
             <div className="steps">
-              {steps.map((s, i) => (
+              {STAGES.map((stage, i) => (
                 <button
-                  className={page === i + 1 ? "active" : ""}
-                  key={s}
-                  onClick={() => setPage(i + 1)}
+                  className={stage.pages.includes(page) ? "active" : ""}
+                  key={stage.label}
+                  onClick={() => setPage(stage.pages[0])}
                 >
                   <span>{i + 1}</span>
-                  {s}
+                  {stage.label}
+                </button>
+              ))}
+              <span className="steps-divider" aria-hidden="true" />
+              {EXTRAS.map((extra) => (
+                <button
+                  className={`step-extra ${page === extra.page ? "active" : ""}`}
+                  key={extra.label}
+                  onClick={() => setPage(extra.page)}
+                >
+                  {extra.label}
                 </button>
               ))}
             </div>
@@ -2209,7 +2300,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <strong>{label(project.runtime)}</strong>
               <span className="muted">
                 {project.state.step
-                  ? `第 ${project.state.step} 步 · ${steps[project.state.step - 1]}`
+                  ? `目前階段 · ${placeName(project.state.step)}`
                   : "等待需求"}
               </span>
               <button
@@ -2225,20 +2316,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
               <div style={{ width: (project.state.progress || 0) + "%" }} />
             </div>
             <div className="task-chips">
-              {[
-                "理解需求",
-                "蒐集依據",
-                "分析與收斂",
-                "人類協作",
-                "產出 PRD",
-              ].map((s, i) => (
+              {STAGES.map((stage, i) => (
                 <button
                   type="button"
-                  className={`task-chip ${(project.state.step || 1) > i * 2 ? "done" : ""}`}
-                  key={s}
-                  onClick={() => openStep([1, 2, 5, 6, 8][i])}
+                  className={`task-chip ${STAGES.findIndex((x) => x.pages.includes(project.state.step || 1)) >= i ? "done" : ""}`}
+                  key={stage.label}
+                  onClick={() => openStep(stage.pages[0])}
                 >
-                  {s}
+                  {stage.label}
                 </button>
               ))}
             </div>
@@ -2275,9 +2360,9 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 onClick={() => setShowActivity(!showActivity)}
               >
                 {showActivity ? "收合" : "展開"}活動紀錄 ·{" "}
-                {project.events.length}
+                {pmEvents.length}
               </button>
-              {(showActivity ? project.events : project.events.slice(-3)).map(
+              {(showActivity ? pmEvents : pmEvents.slice(-3)).map(
                 (e: any) => (
                   <div className="activity" key={e.id}>
                     <span className="event-dot" />
@@ -2287,8 +2372,8 @@ function App({ isClient = false }: { isClient?: boolean }) {
                         {new Date(e.created_at).toLocaleTimeString("zh-TW", {
                           hour: "2-digit",
                           minute: "2-digit",
-                        })}{" "}
-                        · {e.kind}
+                        })}
+                        {EVENT_LABELS[e.kind] ? ` · ${EVENT_LABELS[e.kind]}` : ""}
                       </small>
                     </div>
                   </div>
@@ -2305,6 +2390,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
                       <button onClick={() => openStep(3)}>查看依據</button>
                       <button onClick={() => openStep(2)}>自己再搜尋</button>
                     </div>
+                    {excludedHits.length > 0 && <details>
+                      <summary>沒有採用的 {excludedHits.length} 份與原因</summary>
+                      {excludedHits.map((hit: any) => <div className="evidence" key={hit.source_id}>
+                        <strong>{hit.title}</strong>
+                        <p className="muted">相關度 {Math.round((hit.case_relevance_score || 0) * 100)}% · {exclusionReason(hit)}</p>
+                        <button disabled={busy || project.runtime === "RUNNING"} onClick={() => act(async () => {
+                          const result = hit.source_location === "REMOTE"
+                            ? await api(`/projects/${pid}/knowledge/attach-remote`, "POST", { provider_id: hit.provider_id, remote_evidence_id: hit.remote_evidence_id, query: hit.matched_query || "" })
+                            : await api(`/projects/${pid}/knowledge/attach`, "POST", { source_id: hit.source_id });
+                          setNotice(`${result.message}。重新分析後會納入需求比對。`);
+                        })}>仍要加入</button>
+                      </div>)}
+                    </details>}
                   </div>
                 </article>
               )}
@@ -2314,7 +2412,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   <p>{nextStep.text}</p>
                   {nextStep.action === "analyze"
                     ? <button className="primary" disabled={busy} onClick={() => act(continueRun)}>開始分析 →</button>
-                    : nextStep.step > 1 && <button className="primary" onClick={() => openStep(nextStep.step)}>前往「{steps[nextStep.step - 1]}」→</button>}
+                    : nextStep.step > 1 && <button className="primary" onClick={() => openStep(nextStep.step)}>前往「{placeName(nextStep.step)}」→</button>}
                 </div>
               )}
               {project.interruptions.length > 0 && (
@@ -2381,7 +2479,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 </button>
               </div>
               <div className="composer-foot">
-                <small>證據保存於本機 · 正式版本需經你確認</small>
+                <small />
                 <button
                   className="primary"
                   disabled={busy || project.runtime === "RUNNING"}
@@ -2429,14 +2527,14 @@ function App({ isClient = false }: { isClient?: boolean }) {
           {job.status === "RUNNING" && <p>{job.cancel_requested ? "正在取消，已完成的步驟可能需要收尾。" : `主機正在處理${job.progress ? ` · ${job.progress}%` : ""}，離開頁面不會停止。`}</p>}
           {job.status === "FAILED" && <p role="alert" className="execution-warning">{job.error || "工作失敗，可重新提交。"}</p>}
           <div className="actions">
-            {["QUEUED", "RUNNING"].includes(job.status) && <button disabled={busy || !!job.cancel_requested} onClick={() => act(async () => { updateJob(await api<Job>(`/jobs/${job.job_id}/cancel`, "POST")); })}>取消工作</button>}
+            {["QUEUED", "RUNNING"].includes(job.status) && <button disabled={!!job.cancel_requested} onClick={() => { void api<Job>(`/jobs/${job.job_id}/cancel`, "POST").then(updateJob).catch((e) => setError(e.message)); }}>取消工作</button>}
             {["FAILED", "CANCELLED"].includes(job.status) && <button disabled={busy} onClick={() => act(async () => { updateJob(await api<Job>(`/jobs/${job.job_id}/resume`, "POST")); })}>重新提交</button>}
             {job.status === "COMPLETED" && <button onClick={() => act(async () => {
               const detail = await api<Job>(`/jobs/${job.job_id}`);
               void dismissJob(job.job_id);
               if (job.project_id) { setPid(job.project_id); setHomeOpen(false); }
               if (job.kind === "GUIDANCE") { setGuidance(detail.result); setCreateOpen(true); }
-              if (job.kind === "RAG") { setResults(detail.result?.results || []); setSearchWarnings(detail.result?.warnings || []); setPage(2); }
+              if (job.kind === "RAG" && job.project_id) { showSearchResult(detail.result, job.project_id); setPage(2); setDetailView(true); }
               if (job.kind === "PRD") setPage(8);
               if (job.project_id) await refresh(job.project_id);
             })}>查看結果</button>}
@@ -2501,24 +2599,6 @@ function App({ isClient = false }: { isClient?: boolean }) {
                   {project.runtime === "ERROR" ? "重試工作" : "繼續處理"}
                 </button>
               )}
-              {project.runtime !== "RUNNING" &&
-                !project.state.analysis_stale &&
-                project.requirements.length > 0 && (
-                  <button
-                    onClick={() =>
-                      openStep(
-                        project.changes.some((c: any) => c.status === "OPEN")
-                          ? 9
-                          : 6,
-                      )
-                    }
-                  >
-                    前往下一步：
-                    {project.changes.some((c: any) => c.status === "OPEN")
-                      ? "變更審查"
-                      : "提案審閱"}
-                  </button>
-                )}
             </div>
           </section>
         )}
@@ -2593,16 +2673,19 @@ function App({ isClient = false }: { isClient?: boolean }) {
                 <p>建議釐清：{guidance.questions?.join("；")}</p>
                 <button onClick={() => setBrief(guidance.refined_brief)}>套用建議需求</button>
               </div>}
-              <label>工作方式
-                <select value={initialMode} onChange={(e) => setInitialMode(e.target.value as "AGENT" | "MANUAL")}>
-                  <option value="AGENT">Agent 引導</option><option value="MANUAL">手動流程</option>
-                </select>
-              </label>
-              {initialMode === "AGENT" && <>
-                <label className="checkbox"><input type="checkbox" checked={delegated} onChange={(e) => setDelegated(e.target.checked)} />授權 Agent 代理明確且無衝突的需求決策</label>
-                <label className="checkbox"><input type="checkbox" checked={startOnCreate} onChange={(e) => setStartOnCreate(e.target.checked)} />建立後立即開始分析</label>
-                <small>開放議題、衝突和正式 PRD 定版仍由你確認。</small>
-              </>}
+              <p className="muted">建立後彤靈會自動查找依據並分析需求，需要你決定時會停下來。</p>
+              <details className="create-advanced">
+                <summary>進階選項</summary>
+                <label>工作方式
+                  <select value={initialMode} onChange={(e) => setInitialMode(e.target.value as "AGENT" | "MANUAL")}>
+                    <option value="AGENT">Agent 引導（建議）</option><option value="MANUAL">手動流程</option>
+                  </select>
+                </label>
+                {initialMode === "AGENT" && <>
+                  <label className="checkbox"><input type="checkbox" checked={startOnCreate} onChange={(e) => setStartOnCreate(e.target.checked)} />建立後立即開始分析</label>
+                  <label className="checkbox"><input type="checkbox" checked={delegated} onChange={(e) => setDelegated(e.target.checked)} />讓 Agent 先處理明確且無衝突的需求（衝突與定版仍由你確認）</label>
+                </>}
+              </details>
             </div>
             <div className="actions">
               <button
@@ -2628,7 +2711,7 @@ function App({ isClient = false }: { isClient?: boolean }) {
                     setBrief("");
                     setGuidance(null);
                     setDelegated(false);
-                    setStartOnCreate(false);
+                    setStartOnCreate(true);
                   })
                 }
               >
@@ -2751,41 +2834,25 @@ function App({ isClient = false }: { isClient?: boolean }) {
           <nav className="settings-page-nav" aria-label="設定分類">
             <div className="settings-tabs"><button className={settingsTab === "appearance" ? "active" : ""} onClick={() => setSettingsTab("appearance")}>外觀與主題</button></div>
             {!isClient && <>
-            <div className="settings-tabs">
-              <button
-                className={settingsTab === "model" ? "active" : ""}
-                onClick={() => setSettingsTab("model")}
-              >
-                模型連線
-              </button>
-              <button
-                className={settingsTab === "files" ? "active" : ""}
-                onClick={() => setSettingsTab("files")}
-              >
-                資料夾與範例
-              </button>
-            </div>
-            <div className="settings-tabs v7-tabs">
-              {[
-                ["output", "PRD 模板"],
-                ["organization", "組織與行業"],
-                ["retrieval", "檢索設定"],
-                ["knowledge", "知識來源"],
-                ["knowledge_manager", "知識庫管理"],
-                ["routing", "模型路由"],
-                ["queue", "展示併發"],
-                ["projects", "專案管理"],
-                ["access", "伺服器／客戶端連線"],
-              ].map(([key, title]) => (
-                <button
-                  key={key}
-                  className={settingsTab === key ? "active" : ""}
-                  onClick={() => setSettingsTab(key)}
-                >
-                  {title}
-                </button>
-              ))}
-            </div>
+            {[
+              ["常用", [["model", "模型連線"], ["knowledge", "知識來源"], ["knowledge_manager", "知識庫管理"],
+                        ["output", "PRD 模板"], ["projects", "專案管理"], ["access", "伺服器／客戶端連線"]]],
+              ["進階", [["organization", "組織與行業"], ["files", "資料夾與範例"], ["retrieval", "檢索設定"],
+                        ["routing", "模型路由"], ["queue", "展示併發"]]],
+            ].map(([group, tabs]) => (
+              <div className="settings-tabs v7-tabs" key={group as string}>
+                <small className="settings-group">{group as string}</small>
+                {(tabs as string[][]).map(([key, title]) => (
+                  <button
+                    key={key}
+                    className={settingsTab === key ? "active" : ""}
+                    onClick={() => setSettingsTab(key)}
+                  >
+                    {title}
+                  </button>
+                ))}
+              </div>
+            ))}
             </>}
           </nav>
           <section className="settings-page-content" aria-label="設定內容">
@@ -2994,6 +3061,25 @@ function App({ isClient = false }: { isClient?: boolean }) {
     </div>
   );
 }
+
+function exclusionReason(hit: any) {
+  if (hit.evidence_role === "CONTEXT") return "只當背景參考，未作為需求依據";
+  if (hit.evidence_role === "EXTERNAL_BENCHMARK") return "外部資料，只作參考";
+  return (hit.case_relevance_score || 0) >= 0.5
+    ? "相關度不低，但未達系統的採用門檻；若內容確實相關可直接加入"
+    : "與本案需求的主題重疊少";
+}
+
+// Internal bookkeeping a PM does not need in the activity log.
+const HIDDEN_EVENTS = new Set(["RUN", "DELEGATION", "ANALYSIS_STARTED", "MODE", "MEETING_ANALYZING", "DEMO", "DEMO_REVISION"]);
+const EVENT_LABELS: Record<string, string> = {
+  PROJECT: "專案", KNOWLEDGE: "知識檢索", ANALYSIS: "需求分析", DECISION: "決策",
+  AGENT_DECISION: "Agent 決策", PROPOSAL_REVIEW: "提案審閱", PRD: "PRD", PRD_EDIT: "PRD 編修",
+  EVIDENCE: "依據", SOURCE_REMOVED: "依據", MEETING: "會議", MEETING_EDIT: "會議",
+  MEETING_CONFIRMED: "會議", MEETING_ANALYSIS: "會議", MEETING_MANUAL: "會議", MEETING_ERROR: "會議",
+  PRD_DRAFT: "PRD", DIAGRAM: "圖表", BASELINE: "定版", CHANGE: "變更", PAUSE: "暫停", ERROR: "錯誤",
+  TECHNICAL_MODEL: "IT 交付", TECHNICAL_DIAGRAMS: "IT 交付", TECHNICAL_AMENDMENT: "IT 交付",
+};
 
 const SOURCE_KIND_LABELS: Record<string, string> = {
   REQUIREMENT_TEXT: "需求說明", REQUIREMENT_DOCUMENT: "需求文件", USER_UPLOAD: "一般文件",

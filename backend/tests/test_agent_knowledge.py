@@ -72,6 +72,42 @@ def test_focus_queries_are_short_topic_phrases():
     assert not any("必須" in q for q in queries)
 
 
+def test_automatic_retrieval_uses_saved_needs_and_shared_server(client, company_server):
+    pid = client.post("/api/projects", json={"name": "撥薪通知", "description": "員工需要薪資通知。"}).json()["id"]
+    client.post(f"/api/projects/{pid}/requirement-text", json={"text": "撥薪通知必須加密。"})
+    assert client.patch(f"/api/projects/{pid}/knowledge-policy", json=HYBRID).status_code == 200
+    suggestions = client.get(f"/api/projects/{pid}/retrieval-suggestions")
+    assert suggestions.status_code == 200
+    assert any("撥薪通知" in q for q in suggestions.json()["queries"])
+    before = client.get(f"/api/projects/{pid}").json()["sources"]
+    job = client.post("/api/jobs", json={"kind": "RAG", "project_id": pid, "automatic": True})
+    assert job.status_code == 202, job.text
+    for _ in range(150):
+        status = client.get(f"/api/jobs/{job.json()['job_id']}").json()
+        if status["status"] not in {"RUNNING", "QUEUED"}:
+            break
+        time.sleep(0.1)
+    assert status["status"] == "COMPLETED", status
+    result = status["result"]
+    assert result["automatic"] and result["queries"] == suggestions.json()["queries"]
+    assert FakeServer.searched and result["remote_count"] == 1  # deduplicated across passes
+    assert result["results"] and any(h["matched_query"] for h in result["results"])
+    assert client.get(f"/api/projects/{pid}").json()["sources"] == before  # search is not approval/attach
+    assert client.post("/api/jobs", json={"kind": "RAG", "project_id": pid}).status_code == 422
+
+
+def test_suggestions_and_auto_search_enforce_client_ownership(client, project):
+    from app import client_gateway
+    assert client_gateway.client_route_allowed("GET", f"/api/projects/{project['id']}/retrieval-suggestions")
+    # Ownership is independently enforced by each endpoint, not just the gateway allowlist.
+    token = client_gateway.CURRENT_CLIENT.set("unrelated-client")
+    try:
+        assert client.get(f"/api/projects/{project['id']}/retrieval-suggestions").status_code == 404
+        assert client.post("/api/jobs", json={"kind": "RAG", "project_id": project["id"], "automatic": True}).status_code == 404
+    finally:
+        client_gateway.CURRENT_CLIENT.reset(token)
+
+
 def test_agent_searches_shared_library_and_imports_company_evidence(client, company_server):
     created = client.post("/api/projects", json={
         "name": "企業網銀撥薪轉通知加密",

@@ -2,6 +2,10 @@ import os
 import tempfile
 from pathlib import Path
 import pytest
+import sys
+
+# CI runs pytest from the repo root; the evaluation package lives in backend/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _root = Path(tempfile.mkdtemp(prefix="tongling-tests-"))
 os.environ["DATA_DIR"] = str(_root)

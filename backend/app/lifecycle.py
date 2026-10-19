@@ -209,6 +209,7 @@ def create_draft(db, project):
             "status": r.status,
             "decision": r.decision,
             "evidence": r.evidence,
+            **{key: r.decision[key] for key in ("priority", "actor") if r.decision.get(key)},
         }
         for r in accepted
         if r.status != "EXCLUDED" and r.decision.get("category", "FUNCTIONAL") == "FUNCTIONAL"
@@ -310,9 +311,14 @@ def create_draft(db, project):
                                                              if r.get("source_id")]})
         content["change_scope"] = [{"requirement_id": p["requirement_id"], "action": p["status"],
                                     "before": p["current_state"], "after": p["target_state"]} for p in delta]
+        # A PM-modified requirement carries criteria written for its new wording.
+        decided = {r.id: r.decision for r in accepted}
         content["acceptance_criteria"] = [{"requirement_id": p["requirement_id"], "description": criterion,
                                            "status": "TO_CONFIRM"}
-                                          for p in delta for criterion in p["proposed_requirement"]["acceptance_criteria"]]
+                                          for p in delta
+                                          for criterion in ((decided[p["requirement_id"]].get("action") == "MODIFY"
+                                                             and decided[p["requirement_id"]].get("acceptance_criteria"))
+                                                            or p["proposed_requirement"]["acceptance_criteria"])]
         content["open_issues"] += [{"statement": issue}
                                    for issue in dict.fromkeys(i for p in delta for i in p["evidence_uncertainty"]["open_questions"])]
     if not parent:
@@ -385,6 +391,9 @@ def create_draft(db, project):
         for r in accepted
         if r.decision.get("category") == "DECISION_CONTEXT"
     ]
+    # Sections the PM wrote or answered on an earlier draft carry over.
+    from .prd_editor import apply_edits
+    content = apply_edits(content, (project.state or {}).get("prd_edits"))
     from .db import ResearchRun
 
     research = db.scalar(
@@ -493,6 +502,13 @@ def render_docx(revision, content=None, version=None):
     from docx.shared import Inches, Pt
 
     content = content or revision.content
+    # A PRD reader needs document titles, not internal source ids.
+    from .db import Session as _Session, Source as _Source
+    with _Session() as lookup:
+        titles = {s.id: s.title for s in lookup.scalars(select(_Source))}
+
+    def sources(ids):
+        return "、".join(dict.fromkeys(titles.get(i, i) for i in ids or []))
     folder = DATA / "exports" / revision.id
     folder.mkdir(parents=True, exist_ok=True)
     doc = Document()
@@ -529,7 +545,7 @@ def render_docx(revision, content=None, version=None):
                     "\n" + row["detail"] if row.get("detail") else ""
                 )
                 if row.get("source_refs"):
-                    cells[2].text += "\n來源：" + ", ".join(row["source_refs"])
+                    cells[2].text += "\n來源：" + sources(row["source_refs"])
         for diagram in section["diagrams"]:
             source = diagram["mermaid"]
             if len(source) > 20000 or re_unsafe(source):
@@ -596,11 +612,11 @@ def render_docx(revision, content=None, version=None):
                     if item.get(field):
                         detail.append(f"{label}：" + "；".join(item[field]))
                 detail.append("需求：" + ", ".join(item.get("requirement_refs", [])))
-                detail.append("來源：" + ", ".join(item.get("source_refs", [])))
+                detail.append("來源：" + sources(item.get("source_refs", [])))
                 doc.add_paragraph(f"{item.get('id', '')} {item.get('name', '')}\n" + "\n".join(detail))
         doc.add_heading("技術影響判斷", 2)
         for item in technical.get("technical_impact", []):
-            doc.add_paragraph(f"{item['area']}：{'YES' if item['affected'] else 'NO'}；{item['rationale']}；來源：{', '.join(item['source_refs'])}")
+            doc.add_paragraph(f"{item['area']}：{'YES' if item['affected'] else 'NO'}；{item['rationale']}；來源：{sources(item['source_refs'])}")
         for spec in content.get("diagrams", []):
             if spec.get("generated_from") != "technical_model":
                 continue

@@ -174,7 +174,7 @@ export function TechnicalDeliveryPanel({ revision, sources, requirements, isClie
       {sources.map((source) => <label key={source.id} className="template-row">
         <input type="checkbox" checked={selectedSourceIds.includes(source.id)}
           onChange={() => setSelectedSourceIds((old) => old.includes(source.id) ? old.filter((id) => id !== source.id) : [...old, source.id])} />
-        {source.title} · {source.kind}
+        {source.title} · {({ REQUIREMENT_TEXT: "需求說明", REQUIREMENT_DOCUMENT: "需求文件", TECH_SPEC: "技術規格", BUSINESS_KNOWLEDGE: "業務知識", INTERNAL_POLICY: "內部規範", USER_UPLOAD: "一般文件", MEETING_RECORD: "會議紀錄" } as Record<string, string>)[source.kind] || source.kind}
       </label>)}
       {sources.length === 0 && <p>尚無本案來源，請先檢索或補充。</p>}
       <button disabled={!selectedSourceIds.length} onClick={() => void act(async () => {

@@ -205,6 +205,12 @@ def mark_stale(db, project, source_id, summary):
     state["dirty_sources"] = sorted(dirty)
     state["analysis_stale"] = True
     state["draft_id"] = None
+    # Review and draft reminders describe the old analysis; re-analysis is next.
+    from .db import Interruption
+    for row in db.scalars(select(Interruption).where(
+            Interruption.project_id == project.id, Interruption.status == "OPEN",
+            Interruption.kind.in_(["REQUIREMENT_REVIEW", "FINAL_PRD_REVIEW_REQUIRED"]))):
+        row.status = "RESOLVED"
     added = db.get(Source, source_id)
     if added is not None and added.kind in {"REQUIREMENT_TEXT", "REQUIREMENT_DOCUMENT"}:
         # New requirement wording deserves a fresh shared-library search.

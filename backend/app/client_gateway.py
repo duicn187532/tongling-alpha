@@ -215,6 +215,7 @@ PUBLIC_ROUTES = [
     ("GET", r"/api/projects/[^/]+/peer-research"),
     ("GET", r"/api/knowledge/graph/status"),
     ("POST", r"/api/retrieval/search"),
+    ("GET", r"/api/projects/[^/]+/retrieval-suggestions"),
     ("GET", r"/api/projects/[^/]+/events"),
     ("GET", r"/api/jobs/[^/]+"),
     ("GET", r"/api/jobs"),
@@ -242,6 +243,13 @@ PUBLIC_ROUTES = [
     ("GET", r"/api/prd-revisions/[^/]+/(projection|export-template)"),
     ("PUT", r"/api/prd-revisions/[^/]+/presentation"),
     ("PUT", r"/api/prd-revisions/[^/]+/diagrams/[0-9]+"),
+    ("GET", r"/api/prd-revisions/[^/]+/gaps"),
+    ("POST", r"/api/prd-revisions/[^/]+/gaps/[a-z_]+/answer"),
+    ("POST", r"/api/prd-revisions/[^/]+/advice/apply"),
+    ("GET", r"/api/prd-revisions/[^/]+/quality"),
+    ("POST", r"/api/prd-revisions/[^/]+/requirements/[^/]+/(improve|split-suggestion)"),
+    ("PUT", r"/api/prd-revisions/[^/]+/requirements/[^/]+/split"),
+    ("PUT", r"/api/prd-revisions/[^/]+/(sections/[a-z_]+|requirements/[^/]+)"),
     ("POST", r"/api/agent/guidance"),
 ]
 

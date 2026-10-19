@@ -285,6 +285,9 @@ def suggest_revision(db, revision, config, kind, selected_source_ids=None):
                    "已接受或人工修改的 decision 是本專案目前決策；不要把來源中的舊 OPEN_ITEM 誤判為仍未決。"
                    "若人工決策明示僅供 UAT，仍須保留其測試限定，不宣稱為正式銀行政策。"
                    "沒有來源的想法放在 missing_information，不列為候選。不可改寫已確認需求或定版內容。"
+                   "kind 只能是 acceptance_criteria、business_rules、risk_compliance_security、"
+                   "nonfunctional_requirements、data_impact、success_metrics、actors、dependencies、out_of_scope 之一；"
+                   "suggestion 寫成可直接放進該 PRD 章節的一句話。"
                    )
     output = structured(config, "PRD_ASSIST",
         instruction, material, Suggestions,

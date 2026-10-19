@@ -47,7 +47,14 @@ class ServerSearchInput(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
-def search_project(db, query, project_id):
+def search_suggestions(db, project):
+    from .workflow import requirement_text
+    from .knowledge_federation import focus_queries
+    return {"queries": focus_queries(project.name, requirement_text(db, project)),
+            "basis": "依專案目標與已保存的需求整理；檢索詞不代表已確認事實。"}
+
+
+def search_project(db, query, project_id, *, automatic=False):
     """Same retrieval path for the existing API and durable background jobs."""
     from .retrieval import retrieve
     project = db.get(Project, project_id)
@@ -55,7 +62,15 @@ def search_project(db, query, project_id):
         raise HTTPException(404, "找不到專案")
     policy = policy_for(db, project_id, settings(db))
     before = set(db.scalars(select(RemoteQueryAudit.id).where(RemoteQueryAudit.project_id == project_id)))
-    results = retrieve(db, query, project_id, settings(db))
+    queries = [query]
+    if automatic:
+        from .workflow import requirement_text
+        from .knowledge_federation import agent_search
+        from .retrieval import _retrieve_local
+        results, queries = agent_search(db, project, requirement_text(db, project),
+                                        {**settings(db), "_skip_graph_reasoning": True}, _retrieve_local)
+    else:
+        results = retrieve(db, query, project_id, settings(db))
     events = list(db.scalars(select(RemoteQueryAudit).where(RemoteQueryAudit.project_id == project_id).order_by(RemoteQueryAudit.created_at.desc()).limit(10)))
     warnings = [e.detail for e in events if e.id not in before and e.status == "DEGRADED" and e.detail]
     if "SERVER_SHARED" in policy["scopes"] and not policy["allow_remote_query"]:
@@ -66,12 +81,17 @@ def search_project(db, query, project_id):
         if not db.scalar(select(KnowledgeServer.id).where(KnowledgeServer.enabled == 1)):
             warnings.append("尚未啟用知識伺服器；目前只使用本機可用來源。")
     return {"results": results, "knowledge_mode": policy["mode"],
+            "queries": queries, "automatic": automatic,
             "local_count": sum(r["source_location"] == "LOCAL" for r in results),
             "remote_count": sum(r["source_location"] == "REMOTE" for r in results),
             "warnings": warnings}
 
 
 def register(app, get_db, get):
+    @app.get("/api/projects/{pid}/retrieval-suggestions")
+    def suggestions(pid: str, db=Depends(get_db)):
+        return search_suggestions(db, get(db, Project, pid))
+
     @app.get("/api/settings/knowledge")
     def read_policy(db=Depends(get_db)):
         return validate_policy(settings(db).get("knowledge_policy") or {})

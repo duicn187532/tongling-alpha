@@ -1,0 +1,87 @@
+{
+  "provider": "ollama",
+  "at": "2026-10-19 21:29",
+  "cases": [
+    {
+      "case": "payroll-notification",
+      "runs": [
+        {
+          "case": "payroll-notification",
+          "seconds": 81.2,
+          "model_status": "COMPLETE",
+          "requirements_total": 10,
+          "review_items": 4,
+          "critical_questions": 0,
+          "review_topics": [
+            "員工密碼設定權限",
+            "密碼傳遞方式",
+            "通知加密方式",
+            "通知重送機制"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": true,
+            "保留寄送與重送紀錄": true
+          },
+          "prd_requirements": 4,
+          "criteria_coverage": 1.0,
+          "quality_score": 94,
+          "quality_counts": {
+            "提醒": 0,
+            "建議": 3,
+            "資訊": 8
+          },
+          "review_rejected": false
+        },
+        {
+          "case": "payroll-notification",
+          "seconds": 75.2,
+          "model_status": "COMPLETE",
+          "requirements_total": 7,
+          "review_items": 2,
+          "critical_questions": 0,
+          "review_topics": [
+            "密碼傳遞方式",
+            "通知加密方式"
+          ],
+          "key_points": {
+            "通知改為加密附件": true,
+            "密碼以簡訊另送": true,
+            "員工自訂密碼規則": true,
+            "保留寄送與重送紀錄": false
+          },
+          "prd_requirements": 2,
+          "criteria_coverage": 1.0,
+          "quality_score": 94,
+          "quality_counts": {
+            "提醒": 0,
+            "建議": 3,
+            "資訊": 4
+          },
+          "review_rejected": false
+        }
+      ],
+      "verdicts": [
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "4/4"
+        },
+        {
+          "review_items_in_range": true,
+          "fragmented": false,
+          "key_point_coverage": "3/4"
+        }
+      ],
+      "stability": {
+        "topic_agreement": 0.5,
+        "key_points_identical": false,
+        "review_item_counts": [
+          4,
+          2
+        ]
+      }
+    }
+  ]
+}
