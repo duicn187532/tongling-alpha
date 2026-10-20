@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 
-type ThemeId = "default" | "next" | "cathay" | "scsb" | "sinopac" | "yuanta";
+type ThemeId = "default" | "next" | "green" | "ember" | "crimson" | "azure";
 type ColorMode = "light" | "dark" | "system";
 
 const themes: { id: ThemeId; name: string; description: string; colors: [string, string, string] }[] = [
   { id: "default", name: "原始配色", description: "溫暖彤紅與柔和玉綠", colors: ["#bf405b", "#43b7ad", "#fff8f3"] },
   { id: "next", name: "配色 A", description: "活力黃與科技灰", colors: ["#FAEC32", "#989898", "#20242B"] },
-  { id: "cathay", name: "配色 B", description: "沉穩金融綠", colors: ["#00834B", "#185C45", "#EAF5EE"] },
-  { id: "scsb", name: "配色 C", description: "暖紅與橘金", colors: ["#C94735", "#EE9D36", "#FFF4E7"] },
-  { id: "sinopac", name: "配色 D", description: "俐落金融紅", colors: ["#C51F32", "#842535", "#F9EDEF"] },
-  { id: "yuanta", name: "配色 E", description: "深藍與科技藍", colors: ["#0067A8", "#004477", "#29A7D7"] },
+  { id: "green", name: "配色 B", description: "沉穩金融綠", colors: ["#00834B", "#185C45", "#EAF5EE"] },
+  { id: "ember", name: "配色 C", description: "暖紅與橘金", colors: ["#C94735", "#EE9D36", "#FFF4E7"] },
+  { id: "crimson", name: "配色 D", description: "俐落金融紅", colors: ["#C51F32", "#842535", "#F9EDEF"] },
+  { id: "azure", name: "配色 E", description: "深藍與科技藍", colors: ["#0067A8", "#004477", "#29A7D7"] },
 ];
 
 const themeIds = new Set(themes.map((item) => item.id));

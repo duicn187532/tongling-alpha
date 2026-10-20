@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const themes = ["default", "next", "cathay", "scsb", "sinopac", "yuanta"];
+const themes = ["default", "next", "green", "ember", "crimson", "azure"];
 
 test("six palettes switch instantly, persist, and keep readable primary controls", async ({ browser }) => {
   const context = await browser.newContext({ colorScheme: "light" });
@@ -53,7 +53,7 @@ test("six palettes switch instantly, persist, and keep readable primary controls
   }
 
   await page.reload();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "yuanta");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "azure");
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark");
   const other = await browser.newContext({ colorScheme: "light" });
   const otherPage = await other.newPage();
@@ -94,7 +94,7 @@ test("paired client can change appearance without host settings or server writes
   await page.getByRole("button", { name: "外觀與主題" }).first().click();
   await expect(page.getByRole("button", { name: "主機設定" })).toHaveCount(0);
   await page.getByRole("radio", { name: "配色 C" }).check();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "scsb");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "ember");
   expect(writes).toBe(0);
   await context.close();
 });
